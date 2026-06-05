@@ -12,10 +12,10 @@ UIUtil.Font = Enum.Font.FredokaOne
 UIUtil.Colors = {
 	Panel      = Color3.fromRGB(28, 30, 46),
 	PanelLight = Color3.fromRGB(44, 47, 70),
-	Accent     = Color3.fromRGB(255, 95, 170),
-	Good       = Color3.fromRGB(95, 230, 90),
-	Gem        = Color3.fromRGB(90, 200, 255),
-	Warn       = Color3.fromRGB(255, 175, 35),
+	Accent     = Color3.fromRGB(255, 90, 175),
+	Good       = Color3.fromRGB(70, 235, 95),
+	Gem        = Color3.fromRGB(70, 205, 255),
+	Warn       = Color3.fromRGB(255, 180, 40),
 	Text       = Color3.fromRGB(255, 255, 255),
 	Outline    = Color3.fromRGB(15, 16, 26),
 }

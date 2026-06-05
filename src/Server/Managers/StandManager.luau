@@ -5,14 +5,17 @@
 -- (press E, no hold) carrying a `StandType` attribute the CLIENT reads to open the
 -- matching upgrade panel — there is NO server-side open handler (opening is pure UI).
 --
---   🪓 Shovel  (Cash)  — speeds up digging       -> StandType "Shovel"
---   🔥 Hatch   (Gems)  — shortens hatch timers    -> StandType "HatchSpeed"
---   🍀 Luck    (Gems)  — better dig rarity odds    -> StandType "Luck"
+--   🪓 Shovel    (Cash)  — speeds up digging       -> StandType "Shovel"
+--   🔥 Incubator (Gems)  — shortens hatch timers    -> StandType "Incubator"
+--   🍀 Luck      (Gems)  — better dig rarity odds    -> StandType "Luck"
 --
 -- Everything is built from anchored Parts (no assets). Idempotent: init() rebuilds
 -- the Stands folder from scratch each call.
 
 local Workspace = game:GetService("Workspace")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Palette = require(ReplicatedStorage.Shared.Config.Palette)
 
 local StandManager = {}
 
@@ -36,7 +39,10 @@ local function makePart(props: { [string]: any }): BasePart
 	local p = Instance.new("Part")
 	p.Anchored = true
 	p.CanCollide = true
-	p.Material = Enum.Material.SmoothPlastic
+	-- legoish look: glossy plastic + classic Roblox studs on top, inlets underneath
+	p.Material = Enum.Material.Plastic
+	p.TopSurface = Enum.SurfaceType.Studs
+	p.BottomSurface = Enum.SurfaceType.Inlet
 	for k, v in pairs(props) do
 		(p :: any)[k] = v
 	end
@@ -60,7 +66,7 @@ local function buildBaconNPC(cf: CFrame, parent: Instance, namePrefix: string): 
 	local torso = makePart({
 		Name = "Torso",
 		Size = Vector3.new(2, 2, 1),
-		Color = Color3.fromRGB(70, 110, 180), -- "shirt" color
+		Color = Palette.BaseFloor, -- vibrant blue-gray "shirt" color
 		CanCollide = false,
 		CFrame = CFrame.new(0, 0, 0),
 		Parent = model,
@@ -172,7 +178,7 @@ local function buildStand(
 	makePart({
 		Name = "Sign",
 		Size = Vector3.new(8.5, 5, 0.6),
-		Color = Color3.fromRGB(70, 60, 55),
+		Color = Palette.BaseFloor,
 		Material = Enum.Material.WoodPlanks,
 		CFrame = base * CFrame.new(0, GROUND_TOP + 7, -3.2),
 		Parent = folder,
@@ -183,7 +189,7 @@ local function buildStand(
 		makePart({
 			Name = "Post",
 			Size = Vector3.new(0.6, 9, 0.6),
-			Color = Color3.fromRGB(90, 70, 55),
+			Color = Palette.BaseTrim,
 			Material = Enum.Material.Wood,
 			CFrame = base * CFrame.new(sx * 4, GROUND_TOP + 4.5, 0.8),
 			Parent = folder,
@@ -253,14 +259,14 @@ function StandManager.init()
 	folder.Name = STANDS_FOLDER_NAME
 	folder.Parent = Workspace
 
-	-- a small arc around the spawn pad (14x14 at SC), clear of the pad. The HatchSpeed
+	-- a small arc around the spawn pad (14x14 at SC), clear of the pad. The Incubator
 	-- stand reaches furthest toward -Z (its NPC at ~z=-96); the nearest base fronts sit
 	-- near z=-150 (see header note), so the cluster clears them by ~55 studs. Each faces
 	-- +Z (toward the courtyard/dig lane).
 	local stands = {
-		{ "Shovel", "🪓 SHOVEL SHOP", Color3.fromRGB(160, 110, 60), Vector3.new(SC.X - 34, 0, SC.Z) },
-		{ "HatchSpeed", "🔥 HATCH NESTS", Color3.fromRGB(230, 120, 70), Vector3.new(SC.X, 0, SC.Z - 22) },
-		{ "Luck", "🍀 LUCK", Color3.fromRGB(90, 200, 120), Vector3.new(SC.X + 34, 0, SC.Z) },
+		{ "Shovel", "🪓 SHOVEL SHOP", Palette.Pink, Vector3.new(SC.X - 34, 0, SC.Z) },
+		{ "Incubator", "🔥 INCUBATOR", Palette.Cyan, Vector3.new(SC.X, 0, SC.Z - 22) },
+		{ "Luck", "🍀 LUCK", Palette.Lime, Vector3.new(SC.X + 34, 0, SC.Z) },
 	}
 	-- guard: if a future edit pushes any stand's footprint past the nearest base fronts,
 	-- warn instead of silently colliding with the slot-1/2 buildings. The NPC (groundPos

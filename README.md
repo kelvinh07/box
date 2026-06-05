@@ -2,8 +2,9 @@
 
 A complete, playable Roblox game built in Luau and organized for **Rojo**.
 Dig for eggs → hatch Italian Brainrot memes (in 4 variants) → display them on
-glowing podiums that generate Cash & Gems → upgrade Luck / Hatch Speed → rebirth
-to unlock new zones.
+glowing podiums that generate Cash & Gems → level up your brainrots and upgrade
+Shovel / Incubator / Luck at in-world stands → rebirth to permanently multiply
+your income (keeping your whole collection).
 
 Everything is **code-driven** — UI, map, and brainrot models are all generated
 at runtime, so the game is fully playable on first run with **zero asset IDs**.
@@ -21,14 +22,14 @@ HatchABrainrot/
 └── src/
     ├── Shared/                    → ReplicatedStorage.Shared
     │   ├── Config/
-    │   │   ├── GameConfig.luau        global tunables (timings, plots, autosave)
+    │   │   ├── GameConfig.luau        global tunables (timings, plot-cost curve, autosave)
     │   │   ├── RarityColors.luau      tier + variant color language
     │   │   ├── EggConfig.luau         egg costs, incubation times, tier mapping
-    │   │   ├── BrainrotConfig.luau    base brainrot roster + base income/gems
-    │   │   ├── VariantConfig.luau     Normal/Gold/Diamond/Galaxy mults + odds
-    │   │   ├── ZoneConfig.luau        per-zone egg odds, pools, currency scaling
-    │   │   ├── UpgradeConfig.luau     Luck (10 tiers)/Hatch Speed (9 tiers, cap 85%) + Rebirth rules
-    │   │   ├── ShovelConfig.luau      dig-speed shovel: 9 named tiers + dig hold/cooldown
+    │   │   ├── BrainrotConfig.luau    roster + per-tier income + per-brainrot levels (cap 10)
+    │   │   ├── VariantConfig.luau     Normal/Gold/Diamond/Galaxy mults + gem add + odds
+    │   │   ├── ZoneConfig.luau        per-zone egg odds + pools (CashScale/GemScale unused by income)
+    │   │   ├── UpgradeConfig.luau     Luck (9 tiers) / Incubator (9 tiers) + Rebirth rules + multipliers
+    │   │   ├── ShovelConfig.luau      dig-speed shovel: 9 tiers + dig hold/cooldown (0.3s floor)
     │   │   └── AssetConfig.luau       Creator Store asset IDs (placeholders here)
     │   └── Modules/
     │       ├── Net.luau               RemoteEvent/Function registry
@@ -39,31 +40,34 @@ HatchABrainrot/
     ├── Server/                    → ServerScriptService.Server
     │   ├── Bootstrap.server.luau      entry point: wires everything, lifecycle
     │   └── Managers/
-    │       ├── PlayerData.luau        DataStore load/save + retries + snapshots
-    │       ├── MapBuilder.luau        builds the world + dig field
-    │       ├── BaseManager.luau       per-player base, podiums, model placement
+    │       ├── PlayerData.luau        DataStore load/save + reconcile + snapshots
+    │       ├── MapBuilder.luau        builds the world + spawn
+    │       ├── BaseManager.luau       bases, podiums, plates, ghost Buy-Plot, model placement
     │       ├── BrainrotFactory.luau   Creator Store insert OR procedural fallback
     │       ├── DiggingManager.luau    luck-weighted egg rolls + dig proximity
     │       ├── IncubationManager.luau hatch timers + base/variant rolling
-    │       ├── EconomyManager.luau    passive income loop, plots, selling
-    │       ├── UpgradeManager.luau    Shovel (Cash) + Luck + Hatch Speed purchases
+    │       ├── EconomyManager.luau    passive income, plots, selling, brainrot leveling
+    │       ├── UpgradeManager.luau    Shovel + Incubator + Luck purchases (per-tier Cash/Gems)
     │       ├── StandManager.luau      builds 3 in-world upgrade stands + bacon NPCs
-    │       └── RebirthManager.luau    reset + zone unlock + permanent luck
+    │       └── RebirthManager.luau    3-requirement check + reset Cash only + permanent multipliers
     │
     └── Client/                    → StarterPlayer.StarterPlayerScripts.Client
         ├── Main.client.luau           builds the whole UI, starts state sync
         ├── UIUtil.luau                chunky rounded buttons/frames/tweens
         ├── ClientState.luau           holds authoritative server snapshot
         ├── ClientNet.luau             remote wrapper + failure toasts
+        ├── DigSite.luau               per-client dig mounds + hold-E-to-dig prompts
         ├── Sounds.luau                SFX pool
         └── UI/
             ├── Effects.luau           toasts, +$/+Gem popups, hatch reveal, shake
             ├── TopBar.luau            Cash/Gem counters + zone label
-            ├── HUD.luau               DIG button, egg inventory, incubator bar
-            ├── Stands.luau            3 in-world stand panels (Shovel/Hatch/Luck)
-            ├── Collection.luau        owned brainrots by tier + variant
+            ├── HUD.luau               incubator panel: progress bar, countdown, COLLECT
+            ├── Backpack.luau          🎒 eggs-per-rarity tray, click to hatch
+            ├── Stands.luau            3 in-world stand panels (Shovel/Incubator/Luck)
+            ├── LevelUp.luau           per-brainrot level-up panel (click your podium)
+            ├── Collection.luau        owned brainrots by tier + variant + Lv badge
             ├── Rebirth.luau           rebirth panel + confirmation
-            └── SideNav.luau           toggle buttons for the modals
+            └── SideNav.luau           toggle buttons for the modals (Collection/Rebirth)
 ```
 
 ---
@@ -98,22 +102,34 @@ overwritten).
 ---
 
 ## 🎮 How to play
-1. Stand on the brown **DIG** field in the center and press the big **⛏️ DIG**
-   button (bottom). You find an egg of random rarity.
-2. Click the egg in your **🥚 Eggs** tray (bottom-left) to start hatching it in
-   the **🔮 Incubator** (bottom-right). Watch the live progress bar.
+1. Walk to the green **dig lane** on the open side of the lobby and **hold E** on
+   a mound to dig — an egg pops out of the dirt. Its rarity is decided up front,
+   so rarer eggs look bigger and take longer to dig. Eggs go into your **🎒
+   backpack** (starts at 5, +5 per rebirth, max 50).
+2. Click an egg in your **🎒 backpack** (left) to start hatching it at your base's
+   front **🥚 Incubator**. Watch the live progress bar in the HUD.
 3. Press **COLLECT** when it's ready — a brainrot + variant is revealed and
-   placed on a glowing podium at your base, where it generates passive Cash
-   (and Gems if it's Rare/Legendary tier or a Gold/Diamond/Galaxy variant).
-4. Walk up to the **upgrade stands** near the lobby spawn — each is run by a
-   bacon-hair vendor, just press **E** (instant) to open it: 🪓 **Shovel** (Cash,
-   faster digging), 🔥 **Hatch Speed** (Gems, faster incubation, capped at 85%),
-   and 🍀 **Luck** (Gems, better eggs/variants). Buy more **Plots** at your base
-   by clicking the **🔒 Buy Plot** podium on your next free slot.
-5. Open **📦 Collection** to view everything you own by tier + variant, or sell.
-6. Reach the Cash milestone, then hit **🔁 Rebirth** to reset, unlock the next
-   **Zone** (rarer eggs, exclusive Mythic brainrots, higher payouts), and gain a
-   permanent luck bonus.
+   placed on a glowing podium at your base. It accrues Cash (walk over its green
+   **pressure plate** to bank it); Gems auto-credit. Income depends on its tier,
+   variant, **level**, and your rebirth count.
+4. **Click one of your brainrots** on its podium to open the **⬆️ Level Up**
+   panel — leveling (cap 10) multiplies that brainrot's Cash *and* Gem income
+   (Cash for levels 2-5, Gems for 6-10). Levels are kept forever, even through
+   rebirth.
+5. Walk up to the **upgrade stands** near the lobby spawn — each is run by a
+   bacon-hair vendor, just press **E** (instant) to open it: 🪓 **Shovel** (faster
+   digging), 🔥 **Incubator** (faster hatching), and 🍀 **Luck** (better
+   eggs/variants). Each track has 9 tiers (early tiers cost Cash, later tiers
+   cost Gems). Buy more **Plots** at your base by clicking the **🔒 Buy Plot**
+   podium on your next free slot.
+6. Open **📦 Collection** to view everything you own by tier + variant, or sell.
+7. Hit **🔁 Rebirth** at a lane wall once you meet all three requirements
+   (Lifetime Cash milestone, Gem cost, and being in your highest unlocked zone).
+   Rebirth is **not** a fresh start: it keeps your whole collection (with levels),
+   Gems, upgrade tiers and plots, resets only your Cash, and **permanently
+   multiplies your income** — Gems ×1.5 and Cash ×1.2 per rebirth, compounding.
+   Rebirthing also unlocks the next **Zone** (rarer eggs, exclusive Mythic
+   brainrots) until you reach the last one, then keeps going for more multipliers.
 
 ---
 
@@ -133,7 +149,8 @@ costs, dig proximity, and incubation timing. The client never grants itself
 anything — it only reflects the authoritative snapshot the server pushes.
 
 ## ➕ Adding a zone
-Append an entry to `ZoneConfig.Zones` (egg odds, brainrot tiers, cash/gem scale,
-`UnlockRebirths`) and bump `MaxZone`. Digging, economy, the rebirth unlock chain,
-and the base tinting all read from it automatically.
-# box
+Append an entry to `ZoneConfig.Zones` (egg odds, brainrot tiers, `UnlockRebirths`,
+display name/color) and bump `MaxZone`. Digging, the rebirth unlock chain, and the
+map all read from it automatically. (Note: income is no longer zone-scaled —
+`CashScale`/`GemScale` are kept for reference but unused; payouts scale with the
+permanent rebirth multipliers instead.)

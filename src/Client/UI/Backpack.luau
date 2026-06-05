@@ -44,7 +44,7 @@ function Backpack.build(gui: ScreenGui)
 	local title = UIUtil.label({
 		Size = UDim2.new(1, -16, 0, TITLE_H),
 		Position = UDim2.new(0, 8, 0, 6),
-		Text = "🎒 Eggs (click to hatch)",
+		Text = "🎒 Eggs (click hatch · 🗑️ delete)",
 		Parent = panel,
 	})
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -60,6 +60,7 @@ function Backpack.build(gui: ScreenGui)
 	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 
 	local slots: { [string]: TextButton } = {}
+	local trashButtons: { [string]: TextButton } = {}
 	for i, rarity in ipairs(EggConfig.Order) do
 		local slot = UIUtil.button({
 			Name = rarity,
@@ -77,6 +78,27 @@ function Backpack.build(gui: ScreenGui)
 			end
 		end)
 		slots[rarity] = slot
+
+		-- a small 🗑️ button on the right deletes ONE egg of this rarity. It sits ON TOP
+		-- of the slot (higher ZIndex), so clicking it discards instead of hatching.
+		local trash = UIUtil.button({
+			Name = "Trash",
+			Size = UDim2.new(0, 42, 0, 42),
+			Position = UDim2.new(1, -8, 0.5, 0),
+			AnchorPoint = Vector2.new(1, 0.5),
+			BackgroundColor3 = Color3.fromRGB(220, 60, 70),
+			Text = "🗑️",
+			TextSize = 20,
+			Parent = slot,
+		})
+		trash.ZIndex = slot.ZIndex + 3
+		trash.MouseButton1Click:Connect(function()
+			local r = ClientNet.invoke("DiscardEgg", rarity)
+			if r and r.ok then
+				Sounds.play("Purchase", 0.6)
+			end
+		end)
+		trashButtons[rarity] = trash
 	end
 
 	-- capacity line at the bottom
@@ -95,6 +117,11 @@ function Backpack.build(gui: ScreenGui)
 			slot.Text = ("%s\n%d"):format(rarity:sub(1, 4), count)
 			slot.AutoButtonColor = false
 			slot.BackgroundTransparency = count > 0 and 0 or 0.55
+			-- only show the trash button when there's actually an egg to delete
+			local trash = trashButtons[rarity]
+			if trash then
+				trash.Visible = count > 0
+			end
 		end
 
 		local total = state.EggCount or 0

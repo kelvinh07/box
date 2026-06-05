@@ -18,6 +18,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 local RarityColors = require(Shared.Config.RarityColors)
 local ShovelConfig = require(Shared.Config.ShovelConfig)
+local Net = require(Shared.Modules.Net)
 
 local UIUtil = require(script.Parent.UIUtil)
 local ClientNet = require(script.Parent.ClientNet)
@@ -261,8 +262,10 @@ function makeDigSpot(x: number, topY: number, z: number, id: string, rarity: str
 	prompt.ActionText = "Dig"
 	prompt.ObjectText = (rarity ~= "Common") and rarity or ""
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
-	prompt.HoldDuration = (cfg.stages * PER_STAGE) / digSpeedMult
-	prompt:SetAttribute("Stages", cfg.stages) -- lets the snapshot listener recompute HoldDuration live
+	-- Hold time is the SINGLE shared formula (floored at 0.3s) so the client prompt
+	-- and the server cooldown agree even at the fastest shovel.
+	prompt.HoldDuration = ShovelConfig.holdDuration(rarity, digSpeedMult)
+	prompt:SetAttribute("Rarity", rarity) -- lets the snapshot listener recompute HoldDuration live
 	prompt.MaxActivationDistance = 12
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = patch
@@ -323,8 +326,24 @@ local function scatterPatch(patch: Instance)
 	end
 
 	local zone = patch:GetAttribute("Zone") or 1
-	local result = ClientNet.invoke("RollEggs", #positions, zone)
-	if not (result and result.ok and result.eggs) then
+	-- RollEggs is refused until the player's profile has loaded. In a PUBLISHED game
+	-- that profile comes from DataStore (a slow network call with retries), so the
+	-- first request can lose the join race and fail -- which left the dig field empty.
+	-- Retry QUIETLY until it succeeds (call the remote directly, not via ClientNet, so
+	-- a transient "No profile" never toasts). In Studio the profile is instant.
+	local rollEggs = Net.getFunction("RollEggs")
+	local result
+	for _ = 1, 20 do
+		local ok, r = pcall(function()
+			return rollEggs:InvokeServer(#positions, zone)
+		end)
+		if ok and r and r.ok and r.eggs then
+			result = r
+			break
+		end
+		task.wait(1)
+	end
+	if not result then
 		return
 	end
 	for i, egg in ipairs(result.eggs) do
@@ -358,9 +377,9 @@ function DigSite.start(gui: ScreenGui)
 		digSpeedMult = m
 		for _, inst in ipairs(spotsFolder:GetDescendants()) do
 			if inst:IsA("ProximityPrompt") then
-				local stagesAttr = inst:GetAttribute("Stages")
-				if stagesAttr then
-					inst.HoldDuration = ((stagesAttr :: number) * PER_STAGE) / digSpeedMult
+				local rarityAttr = inst:GetAttribute("Rarity")
+				if rarityAttr then
+					inst.HoldDuration = ShovelConfig.holdDuration(rarityAttr :: string, digSpeedMult)
 				end
 			end
 		end

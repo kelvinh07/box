@@ -27,6 +27,7 @@ Net.Functions = {
 	"RollEggs",           -- ask server to pre-assign rarities to dig spots
 	"Dig",                -- dig a specific assigned spot -> returns its egg rarity
 	"PlaceEgg",           -- put an egg from inventory into the incubator
+	"DiscardEgg",         -- delete one unwanted egg of a rarity from the backpack
 	"CollectIncubator",   -- claim a finished hatch
 	"BuyPlot",            -- buy another brainrot plot
 	"UpgradeLuck",        -- spend gems on Luck

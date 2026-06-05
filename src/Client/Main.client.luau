@@ -23,6 +23,7 @@ local Backpack = require(UI.Backpack)
 local Stands = require(UI.Stands)
 local Collection = require(UI.Collection)
 local Rebirth = require(UI.Rebirth)
+local LevelUp = require(UI.LevelUp)
 local SideNav = require(UI.SideNav)
 
 local player = Players.LocalPlayer
@@ -40,29 +41,43 @@ screen.Parent = playerGui
 Effects.build(screen)
 ClientNet.setEffects(Effects)
 
+-- Start every subsystem in ISOLATION: a failure in one panel (e.g. a stale/broken
+-- upgrade panel) must never abort the rest of the client — above all it must not
+-- stop digging or state sync. Each piece runs in its own pcall and just warns on
+-- failure, so the core gameplay loop always comes up.
+local function startSafe(name: string, fn: () -> ())
+	local ok, err = pcall(fn)
+	if not ok then
+		warn(("[HatchABrainrot] %s failed to start: %s"):format(name, tostring(err)))
+	end
+end
+
+-- CORE LOOP FIRST: authoritative state + the dig field, before any optional UI.
+startSafe("ClientState", function() ClientState.start() end)
+startSafe("DigSite", function() DigSite.start(screen) end)
+
 -- persistent HUD
-TopBar.build(screen)
-HUD.build(screen)
-Backpack.build(screen)
+startSafe("TopBar", function() TopBar.build(screen) end)
+startSafe("HUD", function() HUD.build(screen) end)
+startSafe("Backpack", function() Backpack.build(screen) end)
 
 -- modal panels
-local collection = Collection.build(screen)
-local rebirth = Rebirth.build(screen)
+local collection, rebirth
+startSafe("Collection", function() collection = Collection.build(screen) end)
+startSafe("Rebirth", function() rebirth = Rebirth.build(screen) end)
 
 -- the three stand upgrade panels (opened by walking up to a stand, not the SideNav)
-Stands.start(screen)
+startSafe("Stands", function() Stands.start(screen) end)
 
--- right-side navigation toggles the modals
-SideNav.build(screen, {
-	{ id = "Collection", text = "📦",  color = UIUtil.Colors.Gem,  onClick = collection.toggle },
-	{ id = "Rebirth",    text = "🔁",  color = UIUtil.Colors.Warn, onClick = rebirth.toggle },
-})
+-- per-brainrot level-up panel (opened by clicking your brainrot on its podium)
+startSafe("LevelUp", function() LevelUp.start(screen) end)
 
--- per-client dig mounds over the shared field + your own zone areas
-DigSite.start(screen)
-
--- start receiving authoritative state (also pulls an initial snapshot itself,
--- covering the join-order race between client UI setup and the server's push)
-ClientState.start()
+-- right-side navigation toggles the modals (guarded in case a panel above failed)
+startSafe("SideNav", function()
+	SideNav.build(screen, {
+		{ id = "Collection", text = "📦",  color = UIUtil.Colors.Gem,  onClick = function() if collection then collection.toggle() end end },
+		{ id = "Rebirth",    text = "🔄",  color = Color3.fromRGB(220, 55, 65), onClick = function() if rebirth then rebirth.toggle() end end },
+	})
+end)
 
 print("[HatchABrainrot] Client UI ready.")

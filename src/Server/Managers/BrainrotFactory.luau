@@ -173,7 +173,7 @@ local function applyGlow(model: Model, variant: string)
 end
 
 ----------------------------------------------------------------- label
-local function buildLabel(model: Model, entry: any, zone: number)
+local function buildLabel(model: Model, entry: any, rebirthCount: number)
 	local primary = model.PrimaryPart
 	if not primary then return end
 
@@ -202,7 +202,7 @@ local function buildLabel(model: Model, entry: any, zone: number)
 	variantLabel.BackgroundTransparency = 1
 	variantLabel.Font = Enum.Font.FredokaOne
 	variantLabel.TextScaled = true
-	local cash = select(1, BrainrotMath.income(entry, zone))
+	local cash = select(1, BrainrotMath.income(entry, rebirthCount))
 	variantLabel.Text = ("[%s]  $%s/s"):format(entry.variant, Format.short(cash))
 	variantLabel.TextColor3 = RarityColors.variant(entry.variant)
 	variantLabel.TextStrokeTransparency = 0
@@ -212,7 +212,9 @@ end
 
 ----------------------------------------------------------------- public
 -- Returns a fully-built, anchored brainrot model (not yet parented/positioned).
-function BrainrotFactory.build(entry: any, zone: number): Model
+-- `rebirthCount` feeds the income label via BrainrotMath (income is keyed off the
+-- rebirth multipliers, not the zone), so the displayed $/s matches the payout.
+function BrainrotFactory.build(entry: any, rebirthCount: number): Model
 	local base = BrainrotConfig.get(entry.base)
 	local scale = base and base.Scale or 1
 	local color = base and base.Color or Color3.fromRGB(200, 200, 200)
@@ -231,7 +233,7 @@ function BrainrotFactory.build(entry: any, zone: number): Model
 	end
 
 	applyGlow(model, entry.variant)
-	buildLabel(model, entry, zone)
+	buildLabel(model, entry, rebirthCount)
 	model:SetAttribute("BrainrotId", entry.id)
 	return model
 end

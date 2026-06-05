@@ -19,12 +19,14 @@ local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local CollectionService = game:GetService("CollectionService")
+local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 
 local ZoneConfig = require(Shared.Config.ZoneConfig)
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
 local GameConfig = require(Shared.Config.GameConfig)
+local Palette = require(Shared.Config.Palette)
 local Format = require(Shared.Modules.Format)
 local Net = require(Shared.Modules.Net)
 
@@ -39,6 +41,10 @@ local BaseManager = {}
 local BASES_FOLDER_NAME = "PlayerBases"
 local DIGLANE_FOLDER_NAME = "DigLane"
 local MAX_SLOTS = 10
+-- CollectionService tag the client listens for to wire up the level-up panel, and
+-- the click range for the per-brainrot ClickDetector that opens it.
+local BRAINROT_TAG = "Brainrot"
+local BRAINROT_CLICK_DISTANCE = 24
 local LOBBY_RADIUS = 200       -- distance from dig center to each base (pushed back, courtyard room for the shared lane)
 local ARC_SPAN_DEG = 210       -- how far the ring wraps (>180 = nice and round)
 -- Bigger, two-floor building. Wider sides (+16) and a much deeper back (+50)
@@ -68,6 +74,10 @@ local REBIRTH_WALL = Vector3.new(100, 44, 6)  -- wall WIDTH 100 >= dig-site widt
 local SEG_SIZE = Vector3.new(96, 1, 96)       -- every dig square is this size (bigger; was 68)
 local LANE_WALL_Y = 1 + REBIRTH_WALL.Y / 2   -- wall center height (sits on the ground)
 local LANE_SEG_Y = 1.3                       -- dig-area slab center height
+-- The shared dig lane starts near the half-circle CENTER (zone-1 dig site) and the
+-- sites march OUTWARD (+Z) from there, a wall midway between each consecutive pair.
+local LANE_START = 0                          -- z of the zone-1 dig site (~lobby center)
+local LANE_STEP = SEG_SIZE.Z + 28             -- center-to-center between dig sites
 
 ----------------------------------------------------------------- state
 local basesFolder: Folder
@@ -124,7 +134,10 @@ end
 local function makePart(props: { [string]: any }): BasePart
 	local p = Instance.new("Part")
 	p.Anchored = true
-	p.Material = Enum.Material.SmoothPlastic
+	-- legoish look: glossy plastic + classic Roblox studs on top, inlets underneath
+	p.Material = Enum.Material.Plastic
+	p.TopSurface = Enum.SurfaceType.Studs
+	p.BottomSurface = Enum.SurfaceType.Inlet
 	for k, v in pairs(props) do
 		(p :: any)[k] = v
 	end
@@ -157,7 +170,7 @@ local function buildPodium(cf: CFrame, parent: Instance): BasePart
 	local podium = makePart({
 		Name = "Podium",
 		Size = BrainrotFactory.PODIUM_SIZE,
-		Color = Color3.fromRGB(40, 40, 55),
+		Color = Palette.Podium,
 		Material = Enum.Material.Neon,
 		CFrame = cf,
 		Parent = parent,
@@ -165,7 +178,7 @@ local function buildPodium(cf: CFrame, parent: Instance): BasePart
 	local rim = makePart({
 		Name = "Rim",
 		Size = BrainrotFactory.PODIUM_SIZE + Vector3.new(1, -0.6, 1),
-		Color = Color3.fromRGB(120, 220, 255),
+		Color = Palette.PodiumRim,
 		Material = Enum.Material.Neon,
 		CFrame = cf * CFrame.new(0, -0.2, 0),
 		Parent = podium,
@@ -188,13 +201,45 @@ local function brainrotIdAtPodium(slot: number, idx: number): string?
 	return nil
 end
 
+-- Build (or update) the "Lv N" billboard on a brainrot model so its current level
+-- is always readable on the podium. Idempotent: reuses an existing LevelLabel.
+local function setBrainrotLevelLabel(model: Model, level: number)
+	local primary = model.PrimaryPart
+	if not primary then
+		return
+	end
+	local bb = primary:FindFirstChild("LevelLabel") :: BillboardGui?
+	if not bb then
+		bb = Instance.new("BillboardGui")
+		bb.Name = "LevelLabel"
+		bb.Size = UDim2.new(0, 90, 0, 28)
+		bb.StudsOffset = Vector3.new(0, 7.5, 0) -- above the factory InfoLabel
+		bb.AlwaysOnTop = true
+		bb.MaxDistance = 120
+		bb.Parent = primary
+		local lbl = Instance.new("TextLabel")
+		lbl.Name = "Text"
+		lbl.Size = UDim2.fromScale(1, 1)
+		lbl.BackgroundTransparency = 1
+		lbl.Font = Enum.Font.FredokaOne
+		lbl.TextScaled = true
+		lbl.TextColor3 = Color3.fromRGB(255, 235, 130)
+		lbl.TextStrokeTransparency = 0
+		lbl.Parent = bb
+	end
+	local text = bb:FindFirstChild("Text") :: TextLabel?
+	if text then
+		text.Text = ("Lv %d"):format(level)
+	end
+end
+
 -- a green pressure plate in front of podium `idx`; stepping on it collects cash.
 -- `cf` is the plate's world CFrame (its center, already lifted to the floor surface).
 local function buildPlate(slot: number, idx: number, cf: CFrame, parent: Instance)
 	local plate = makePart({
 		Name = ("Plate_%d"):format(idx),
 		Size = PLATE,
-		Color = Color3.fromRGB(80, 230, 80),
+		Color = Palette.Plate,
 		Material = Enum.Material.Neon,
 		CFrame = cf,
 		Parent = parent,
@@ -240,7 +285,7 @@ local function buildPlate(slot: number, idx: number, cf: CFrame, parent: Instanc
 		EconomyManager.collect(occupant, id)
 		-- quick green flash on the plate
 		plate.Color = Color3.fromRGB(180, 255, 180)
-		TweenService:Create(plate, TweenInfo.new(0.4), { Color = Color3.fromRGB(80, 230, 80) }):Play()
+		TweenService:Create(plate, TweenInfo.new(0.4), { Color = Palette.Plate }):Play()
 		task.delay(0.6, function()
 			rec.debounce = false
 		end)
@@ -277,13 +322,13 @@ local function buildGhostPlot(slot: number, count: number)
 
 	local ghost = buildPodium(origin * CFrame.new(lx, baseLY + BrainrotFactory.PODIUM_SIZE.Y / 2, lz), folder)
 	ghost.Name = "GhostPodium"
-	ghost.Color = Color3.fromRGB(150, 90, 90)   -- reddish/grey, distinct from real neon podiums
+	ghost.Color = Palette.Wall   -- coral "locked" look, distinct from the vivid-purple real podiums
 	ghost.Material = Enum.Material.SmoothPlastic
 	ghost.Transparency = 0.5
 	ghost.CanCollide = false
 	local rim = ghost:FindFirstChild("Rim")
 	if rim and rim:IsA("BasePart") then
-		rim.Color = Color3.fromRGB(120, 90, 90)
+		rim.Color = Palette.Wall
 		rim.Transparency = 0.5
 	end
 
@@ -405,12 +450,35 @@ local function placeBrainrotForSlot(slot: number, player: Player, entry: any)
 	end
 
 	local podium = podiums[targetIndex]
-	local model = BrainrotFactory.build(entry, profile.CurrentZone)
+	-- income on the factory label is keyed off the rebirth multipliers, so pass the
+	-- player's rebirth count (NOT the zone) to keep the $/s matching the payout.
+	local model = BrainrotFactory.build(entry, profile.Rebirths)
 	model:SetAttribute("PodiumIndex", targetIndex)
+	-- BrainrotId is set by BrainrotFactory.build; set it again defensively so the
+	-- client can always read it off the model regardless of the build path.
+	model:SetAttribute("BrainrotId", entry.id)
 	model.Parent = slotFolder[slot]
 	local _, modelSize = model:GetBoundingBox()
 	local topY = podium.Position.Y + podium.Size.Y / 2 + modelSize.Y / 2
 	model:PivotTo(CFrame.new(podium.Position.X, topY, podium.Position.Z))
+
+	-- show the brainrot's current level ("Lv N") on its billboard
+	setBrainrotLevelLabel(model, entry.level or 1)
+
+	-- tag the model + add a ClickDetector so the CLIENT can open the level-up panel.
+	-- The server only WIRES the detector (tag + BrainrotId attribute + ClickDetector);
+	-- the client connects ClickDetector.MouseClick locally and reads the entry from
+	-- its snapshot, then invokes the LevelBrainrot remote.
+	-- Create+parent the ClickDetector BEFORE tagging so the detector is already
+	-- present when the tag-added signal replicates to the client (avoids a race
+	-- where the client wires the tag but finds no detector yet).
+	if model.PrimaryPart then
+		local click = Instance.new("ClickDetector")
+		click.Name = "LevelClick"
+		click.MaxActivationDistance = BRAINROT_CLICK_DISTANCE
+		click.Parent = model.PrimaryPart
+	end
+	CollectionService:AddTag(model, BRAINROT_TAG)
 
 	-- gentle idle spin/float
 	task.spawn(function()
@@ -447,6 +515,20 @@ function BaseManager.removeBrainrot(player: Player, id: string)
 	end
 end
 
+-- Refresh a single placed brainrot's "Lv N" billboard after it levels up (called
+-- by EconomyManager.levelBrainrot). No-op if the model isn't placed for the player.
+function BaseManager.refreshBrainrotLabel(player: Player, entry: any)
+	local slot = playerSlot[player]
+	if not slot then
+		return
+	end
+	local models = slotModels[slot]
+	local model = models and models[entry.id]
+	if model then
+		setBrainrotLevelLabel(model, entry.level or 1)
+	end
+end
+
 -- (re)build the podium grid + plates for a player's plot count, then re-place
 -- their brainrots (called from EconomyManager.buyPlot and RebirthManager).
 function BaseManager.rebuildPlots(player: Player)
@@ -471,7 +553,7 @@ local function buildIncubator(cf: CFrame, parent: Instance): BasePart
 	local base = makePart({
 		Name = "Incubator",
 		Size = Vector3.new(6, 5, 5),
-		Color = Color3.fromRGB(60, 70, 110),
+		Color = Palette.Incubator,
 		Material = Enum.Material.Metal,
 		CFrame = cf * CFrame.new(0, 2.5, 0),
 		Parent = parent,
@@ -480,7 +562,7 @@ local function buildIncubator(cf: CFrame, parent: Instance): BasePart
 		Name = "Dome",
 		Shape = Enum.PartType.Ball,
 		Size = Vector3.new(4, 4, 4),
-		Color = Color3.fromRGB(150, 230, 255),
+		Color = Palette.Glass,
 		Material = Enum.Material.Glass,
 		Transparency = 0.4,
 		CanCollide = false,
@@ -511,22 +593,26 @@ local function buildIncubator(cf: CFrame, parent: Instance): BasePart
 end
 
 -- a SHARED per-zone rebirth gate on the one central lane. Wall #k sits between the
--- zone-k and zone-(k+1) dig sites. It NEVER blocks movement (CanCollide=false) — it
--- is purely an interactive rebirth gate that EVERY player uses. Clicking it tries to
--- rebirth the CLICKER, but only when THEY are currently in zone k (so the wall in
--- front of their current zone is the one that advances them). Its SurfaceGui shows a
--- GENERIC label (no per-player gem cost — this is shared).
+-- zone-k and zone-(k+1) dig sites. It PHYSICALLY BLOCKS players who have not yet
+-- unlocked zone k+1 (via the "ZoneGate"..k collision group — see setupZoneCollision)
+-- and lets unlocked players walk straight through, so rebirthing "breaks down the
+-- wall" for you. Clicking it tries to rebirth the CLICKER, but only when THEY are
+-- currently in zone k. Its SurfaceGui shows a GENERIC shared label.
 local function buildSharedWall(k: number, cf: CFrame, parent: Instance)
 	local wall = makePart({
 		Name = ("RebirthWall_%d"):format(k),
 		Size = REBIRTH_WALL,
-		Color = Color3.fromRGB(80, 80, 90),
+		Color = Palette.Wall,
 		Material = Enum.Material.SmoothPlastic,
 		Transparency = 0.05,
 		CFrame = cf,
 		Parent = parent,
 	})
-	wall.CanCollide = false -- shared lane wall never physically blocks anyone
+	-- blocks players below the zone-k+1 threshold; unlocked players pass through it
+	wall.CanCollide = true
+	pcall(function()
+		wall.CollisionGroup = ("ZoneGate%d"):format(k)
+	end)
 
 	local click = Instance.new("ClickDetector")
 	click.MaxActivationDistance = 30
@@ -594,7 +680,7 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 	makePart({
 		Name = "ZoneBorder",
 		Size = SEG_SIZE + Vector3.new(12, -0.4, 12),
-		Color = Color3.fromRGB(95, 175, 80),
+		Color = Palette.Grass,
 		Material = Enum.Material.Grass,
 		CFrame = CFrame.new(pos.X, LANE_SEG_Y - 0.2, pos.Z) * rot,
 		Parent = parent,
@@ -603,8 +689,10 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 	local dirt = makePart({
 		Name = ("Zone%dDig"):format(zone),
 		Size = SEG_SIZE,
-		Color = Color3.fromRGB(130, 215, 95),
-		Material = Enum.Material.Grass,
+		-- the dig field's FIRST LAYER is a dark brown earth, deliberately DARKER than
+		-- the tan dirt mounds (~RGB 186,150,110) the client scatters on top of it.
+		Color = Palette.DigField,
+		Material = Enum.Material.Ground,
 		CFrame = CFrame.new(pos.X, LANE_SEG_Y, pos.Z) * rot,
 		Parent = parent,
 	})
@@ -666,8 +754,8 @@ end
 -- staircase doorway, the staircase itself, and a removable staircase barrier.
 -- Returns the incubator's base part (placed just outside the open front).
 local function buildBuilding(slot: number, origin: CFrame, parent: Instance): BasePart
-	local wallColor = Color3.fromRGB(150, 152, 172)
-	local trimColor = Color3.fromRGB(95, 98, 122)
+	local wallColor = Palette.BaseWall
+	local trimColor = Palette.BaseTrim
 	local SIDE_H = 2 * WALL_H + WALL_T          -- side walls span both floors
 	local SIDE_MID = 1 + SIDE_H / 2             -- center Y of a full-height side wall
 
@@ -676,7 +764,7 @@ local function buildBuilding(slot: number, origin: CFrame, parent: Instance): Ba
 		-- baseLY = floor surface; wall section spans baseLY .. baseLY + WALL_H
 		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, 7, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + 3.5, 0), Parent = parent })
 		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, 7, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + WALL_H - 3.5, 0), Parent = parent })
-		makePart({ Name = "Window", Size = Vector3.new(WALL_T * 0.5, 8, FLOOR.Z - 5), Color = Color3.fromRGB(150, 215, 255), Material = Enum.Material.Glass, Transparency = 0.5, CanCollide = false, CFrame = origin * CFrame.new(x, baseLY + WALL_H / 2, 0), Parent = parent })
+		makePart({ Name = "Window", Size = Vector3.new(WALL_T * 0.5, 8, FLOOR.Z - 5), Color = Palette.Glass, Material = Enum.Material.Glass, Transparency = 0.5, CanCollide = false, CFrame = origin * CFrame.new(x, baseLY + WALL_H / 2, 0), Parent = parent })
 	end
 
 	for _, sx in ipairs({ -1, 1 }) do
@@ -692,7 +780,7 @@ local function buildBuilding(slot: number, origin: CFrame, parent: Instance): Ba
 	makePart({
 		Name = "Platform",
 		Size = FLOOR,
-		Color = Color3.fromRGB(60, 62, 82),
+		Color = Palette.BaseFloor,
 		Material = Enum.Material.SmoothPlastic,
 		CFrame = origin,
 		Parent = parent,
@@ -709,7 +797,7 @@ local function buildBuilding(slot: number, origin: CFrame, parent: Instance): Ba
 			makePart({
 				Name = "Floor2Slab",
 				Size = Vector3.new(sideW, WALL_T, FLOOR.Z),
-				Color = Color3.fromRGB(60, 62, 82),
+				Color = Palette.BaseFloor,
 				Material = Enum.Material.SmoothPlastic,
 				CFrame = origin * CFrame.new(sx * (STAIR_GAP / 2 + sideW / 2), slabMidY, 0),
 				Parent = parent,
@@ -722,7 +810,7 @@ local function buildBuilding(slot: number, origin: CFrame, parent: Instance): Ba
 		makePart({
 			Name = "Floor2Slab",
 			Size = Vector3.new(STAIR_GAP, WALL_T, frontLen),
-			Color = Color3.fromRGB(60, 62, 82),
+			Color = Palette.BaseFloor,
 			Material = Enum.Material.SmoothPlastic,
 			CFrame = origin * CFrame.new(0, slabMidY, -FLOOR.Z / 2 + frontLen / 2),
 			Parent = parent,
@@ -795,7 +883,7 @@ local function buildBuilding(slot: number, origin: CFrame, parent: Instance): Ba
 		local barrier = makePart({
 			Name = "StairBarrier",
 			Size = Vector3.new(STAIR_GAP, WALL_H - 2, WALL_T),
-			Color = Color3.fromRGB(220, 60, 60),
+			Color = Palette.LockRed,
 			Material = Enum.Material.Neon,
 			Transparency = 0.5,
 			-- blocks the stairwell ENTRANCE at the front (room side) so the well can't be entered
@@ -831,23 +919,107 @@ end
 -- closest to the opening, with walls midway between them. EVERY player uses this one
 -- lane and must break each wall to advance:
 --   half-circle opening -> Zone 1 dig -> wall -> Zone 2 dig -> wall -> Zone 3 dig
+----------------------------------------------------------------- zone collision gating
+-- Players physically can't cross a rebirth wall into a zone they haven't unlocked.
+-- Collision groups: wall k is in "ZoneGate"..k; each player is in "ZoneProg"..(their
+-- highest unlocked zone). A player passes gate k iff their progress > k (i.e. they've
+-- unlocked zone k+1). The lobby/bases sit SOUTH of every wall, so gating only blocks
+-- FORWARD travel into locked zones — a player can always walk home, and a freshly
+-- rebirthed player's group is refreshed so they're never trapped on the far side.
+local ZONE_GATE = "ZoneGate" -- + k
+local ZONE_PROG = "ZoneProg" -- + progress level
+local function setupZoneCollision()
+	local function reg(name: string)
+		pcall(function() PhysicsService:RegisterCollisionGroup(name) end)
+	end
+	for k = 1, ZoneConfig.MaxZone - 1 do reg(ZONE_GATE .. k) end
+	for p = 1, ZoneConfig.MaxZone do reg(ZONE_PROG .. p) end
+	-- progress p passes gate k iff p > k (make those pairs NON-collidable)
+	for p = 1, ZoneConfig.MaxZone do
+		for k = 1, ZoneConfig.MaxZone - 1 do
+			if p > k then
+				pcall(function()
+					PhysicsService:CollisionGroupSetCollidable(ZONE_PROG .. p, ZONE_GATE .. k, false)
+				end)
+			end
+		end
+	end
+end
+
+-- Put a player's character into the collision group for their unlocked progress so
+-- the zone walls block/pass them correctly. Called on every spawn and after rebirth.
+function BaseManager.applyZoneGate(player: Player)
+	local char = player.Character
+	if not char then
+		return
+	end
+	local profile = PlayerData.get(player)
+	local level = profile and ZoneConfig.highestUnlocked(profile.Rebirths) or 1
+	local group = ZONE_PROG .. math.clamp(level, 1, ZoneConfig.MaxZone)
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			pcall(function() part.CollisionGroup = group end)
+		end
+	end
+end
+
+-- un-jumpable side FENCES at the zone1/2 boundary: a solid wall from each lane-
+-- flanking END plot (slots 9 & 10) to the matching end of the zone1/2 wall, so a
+-- player can't walk AROUND the wall to skip into zone 2. Always collidable (default
+-- group) — only the central wall is the per-player gate.
+local FENCE_H = 28 -- jump height is ~7 studs, so this is comfortably un-jumpable
+local function buildLaneFences()
+	local wallZ = LANE_START + LANE_STEP / 2 -- zone1/2 (k=1) wall center z
+	local wallHalfX = REBIRTH_WALL.X / 2
+	for _, fence in ipairs({
+		{ slot = 9, sign = -1, name = "ZoneFence_Left" },
+		{ slot = 10, sign = 1, name = "ZoneFence_Right" },
+	}) do
+		local wallEnd = Vector3.new(fence.sign * wallHalfX, 0, wallZ) -- end of the wall on this side
+		-- anchor the fence at the end-plot footprint CORNER nearest that wall end, so it
+		-- meets the building at its edge instead of clipping through the plot interior.
+		local origin = baseOrigin(fence.slot)
+		local best = wallEnd
+		local bestD = math.huge
+		for _, lx in ipairs({ -1, 1 }) do
+			for _, lz in ipairs({ -1, 1 }) do
+				local c = (origin * CFrame.new(lx * FLOOR.X / 2, 0, lz * FLOOR.Z / 2)).Position
+				local d = (Vector3.new(c.X, 0, c.Z) - wallEnd).Magnitude
+				if d < bestD then
+					bestD = d
+					best = c
+				end
+			end
+		end
+		local dx, dz = wallEnd.X - best.X, wallEnd.Z - best.Z
+		local length = math.sqrt(dx * dx + dz * dz)
+		makePart({
+			Name = fence.name,
+			Size = Vector3.new(2, FENCE_H, math.max(length, 1)),
+			Color = Palette.Fence,
+			Material = Enum.Material.WoodPlanks,
+			CFrame = CFrame.new((best.X + wallEnd.X) / 2, 1 + FENCE_H / 2, (best.Z + wallEnd.Z) / 2)
+				* CFrame.Angles(0, math.atan2(dx, dz), 0),
+			Parent = laneFolder,
+		})
+	end
+end
+
 local function buildSharedLane()
 	local x = MapBuilder.DigCenter.X
-	local mouthZ = LOBBY_RADIUS * (-math.cos(math.rad(ARC_SPAN_DEG / 2)))  -- +Z edge of the opening (end plots)
-	local LANE_GAP = 30          -- gap from the half-circle opening to dig site 1 (closer to the bases)
-	local STEP = SEG_SIZE.Z + 28 -- center-to-center between consecutive dig sites
-	-- dig sites march OUTWARD (+Z), site 1 closest to the opening:
+	-- dig sites march OUTWARD (+Z) starting near the half-circle center (LANE_START):
 	for z = 1, ZoneConfig.MaxZone do
-		local pz = mouthZ + LANE_GAP + (z - 1) * STEP
+		local pz = LANE_START + (z - 1) * LANE_STEP
 		buildZoneArea(z, Vector3.new(x, 0, pz), Vector3.new(0, 0, 1), laneFolder)   -- dir +Z (lane runs outward)
 	end
-	-- walls exactly midway between consecutive dig sites; Front face (the SurfaceGui)
-	-- points back toward the half-circle (-Z, toward the approaching players); wall
-	-- spans across X:
+	-- walls exactly midway between consecutive dig sites; Front (-Z) faces the bases:
 	for k = 1, ZoneConfig.MaxZone - 1 do
-		local wz = mouthZ + LANE_GAP + (k - 1) * STEP + STEP / 2
-		buildSharedWall(k, CFrame.new(x, LANE_WALL_Y, wz), laneFolder)   -- identity rotation => Front (-Z) faces the bases
+		local wz = LANE_START + (k - 1) * LANE_STEP + LANE_STEP / 2
+		buildSharedWall(k, CFrame.new(x, LANE_WALL_Y, wz), laneFolder)
 	end
+
+	-- close the zone1/2 lane sides so the central wall can't simply be walked around
+	buildLaneFences()
 end
 
 ----------------------------------------------------------------- staircase gating
@@ -993,8 +1165,9 @@ end
 function BaseManager.updateRebirthGate(_target: Player | number)
 end
 
--- keeps the pressure-plate "ready to collect" labels in sync across ALL occupied
--- slots (rebirth gating is now handled by the shared lane, no per-slot walls)
+-- keeps the pressure-plate "ready to collect" labels AND each placed brainrot's
+-- "Lv N" billboard in sync across ALL occupied slots (rebirth gating is now handled
+-- by the shared lane, no per-slot walls)
 function BaseManager.startGateUpdater()
 	task.spawn(function()
 		while true do
@@ -1016,6 +1189,23 @@ function BaseManager.startGateUpdater()
 						-- unoccupied slot: keep plate labels blank
 						for _, rec in pairs(plates) do
 							rec.label.Text = ""
+						end
+					end
+				end
+
+				-- refresh each placed brainrot's "Lv N" label from the occupant's
+				-- Collection entry level (keeps podium labels correct after leveling
+				-- or a rebirth re-place).
+				local models = slotModels[slot]
+				if occupant and models then
+					local profile = PlayerData.get(occupant)
+					if profile then
+						local levelById: { [string]: number } = {}
+						for _, entry in ipairs(profile.Collection) do
+							levelById[entry.id] = entry.level or 1
+						end
+						for id, model in pairs(models) do
+							setBrainrotLevelLabel(model, levelById[id] or 1)
 						end
 					end
 				end
@@ -1080,7 +1270,9 @@ function BaseManager.init()
 		buildBaseStructure(slot)
 	end
 
-	-- then build the SINGLE shared dig lane down the axis of symmetry (x = 0)
+	-- register the zone-gate collision groups BEFORE the walls (they set their own
+	-- CollisionGroup), then build the SINGLE shared dig lane down the axis (x = 0)
+	setupZoneCollision()
 	buildSharedLane()
 end
 

@@ -201,12 +201,35 @@ function IncubationManager.collect(player: Player): any
 	return { ok = true, entry = entry }
 end
 
+------------------------------------------------------------------ Discard
+-- Delete ONE unwanted egg of `rarity` from the backpack (no hatch, no refund).
+-- Server-authoritative: validates the rarity + that the player actually holds one.
+function IncubationManager.discardEgg(player: Player, rarity: string): any
+	local profile = PlayerData.get(player)
+	if not profile then
+		return { ok = false, reason = "No profile." }
+	end
+	if not EggConfig.exists(rarity) then
+		return { ok = false, reason = "Unknown egg." }
+	end
+	if (profile.Eggs[rarity] or 0) <= 0 then
+		return { ok = false, reason = "No egg to delete." }
+	end
+	profile.Eggs[rarity] = math.max(0, (profile.Eggs[rarity] or 0) - 1)
+	PlayerData.markDirty(player)
+	PlayerData.push(player)
+	return { ok = true, rarity = rarity }
+end
+
 function IncubationManager.init()
 	Net.getFunction("PlaceEgg").OnServerInvoke = function(player, rarity)
 		return IncubationManager.placeEgg(player, rarity)
 	end
 	Net.getFunction("CollectIncubator").OnServerInvoke = function(player)
 		return IncubationManager.collect(player)
+	end
+	Net.getFunction("DiscardEgg").OnServerInvoke = function(player, rarity)
+		return IncubationManager.discardEgg(player, rarity)
 	end
 end
 

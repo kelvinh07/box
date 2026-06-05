@@ -15,9 +15,10 @@ Canonical, cross-tool guide for LLM coding assistants working in this repo. Keep
 4. **Hatch an egg only at your base front INCUBATOR** (server proximity-checked).
 5. The hatched brainrot **spins on a podium** and **accrues cash**.
 6. Walk over that brainrot's **green PRESSURE PLATE** to collect its accrued cash. **Gems auto-credit** (no plate needed).
-7. Spend on **plots / gem upgrades**; then **REBIRTH** at a lane/wall gate to unlock the next **ZONE** (rarer eggs, higher cash/gem scaling).
+7. **Level up** individual brainrots (click them on their podium) to multiply their income; buy more **plots** at the base ghost podium; spend Cash/Gems at the **three in-world upgrade stands** (Shovel / Incubator / Luck) near the lobby spawn.
+8. **REBIRTH** at a lane/wall gate once you meet all three requirements (LifetimeCash milestone, Gem cost, correct zone). Rebirth is **not** a fresh start — it **keeps your whole Collection (with levels), Gems, tiers and plots**, resets only Cash + LifetimeCash, and **permanently multiplies income** (gems ×1.5, cash ×1.2 per rebirth, compounding). Rebirths continue past the last zone.
 
-Brainrots have **rarity tiers** (Common → Uncommon → Rare → Legendary, plus zone 2+ exclusive **Mythic**) and **4 variants** (Normal / Gold / Diamond / Galaxy) that multiply stats and add glow.
+Brainrots have **rarity tiers** (Common → Uncommon → Rare → Legendary, plus zone 2+ exclusive **Mythic**) and **4 variants** (Normal / Gold / Diamond / Galaxy) that multiply stats and add glow. Income is **tier-based** (no longer zone-scaled) and further scaled by the variant, the per-brainrot **level** (cap 10), and the rebirth multipliers — see `BrainrotMath`.
 
 ---
 
@@ -32,13 +33,13 @@ robloxrename/
 └── src/
     ├── Shared/                  # -> ReplicatedStorage.Shared
     │   ├── Config/              # ALL gameplay balance + data tables (tune here)
-    │   │   ├── GameConfig.luau      # global tunables: starting cash/gems/plots, egg capacity, plot cost, DataStore, ticks
+    │   │   ├── GameConfig.luau      # global tunables: starting cash/gems/plots, egg capacity, plot-cost curve, DataStore, ticks
     │   │   ├── EggConfig.luau       # egg rarities: HatchCost, Incubation seconds, BrainrotTier
-    │   │   ├── BrainrotConfig.luau  # brainrot roster: Tier, BaseCash, BaseGem, Color, Scale
-    │   │   ├── VariantConfig.luau   # Normal/Gold/Diamond/Galaxy: CashMult, GemBonus, Weight, LuckBias
-    │   │   ├── ZoneConfig.luau      # per-zone DigOdds, BrainrotTiers, CashScale, GemScale, UnlockRebirths
-    │   │   ├── UpgradeConfig.luau   # Luck (10 tiers) + HatchSpeed (9 named tiers, cap 85%), Rebirth rules, derived helpers
-    │   │   ├── ShovelConfig.luau    # dig-speed shovel: 9 named tiers (DigSpeedMult), per-rarity hold stages + cooldown helpers
+    │   │   ├── BrainrotConfig.luau  # brainrot roster + TierIncome (per-min cash/gem) + per-brainrot Levels (cost/currency, cap 10)
+    │   │   ├── VariantConfig.luau   # Normal/Gold/Diamond/Galaxy: CashMult, GemBonus (gems/min), Weight, LuckBias
+    │   │   ├── ZoneConfig.luau      # per-zone DigOdds, BrainrotTiers, UnlockRebirths (CashScale/GemScale kept but UNUSED by income)
+    │   │   ├── UpgradeConfig.luau   # Luck (9 tiers, Gems) + Incubator (9 named tiers, Cash 1-5/Gems 6-9) + Rebirth rules (cashMilestone/gemCost/multipliers)
+    │   │   ├── ShovelConfig.luau    # dig-speed shovel: 9 tiers (Cash 1-5/Gems 6-9), DigSpeedMult, per-rarity hold stages + 0.3s floor + cooldown helpers
     │   │   ├── RarityColors.luau    # tier/variant/currency color language
     │   │   └── AssetConfig.luau     # brainrot name -> Creator Store asset id (nil => procedural), icons, SFX
     │   └── Modules/
@@ -50,16 +51,16 @@ robloxrename/
     ├── Server/                  # -> ServerScriptService.Server
     │   ├── Bootstrap.server.luau    # single entry point: setup remotes, build world, init managers, player lifecycle
     │   └── Managers/                # ModuleScripts, each with init() wired by Bootstrap
-    │       ├── PlayerData.luau       # authoritative profiles: DataStore load/save, snapshot, push
+    │       ├── PlayerData.luau       # authoritative profiles: DataStore load/save, reconcile, snapshot, push
     │       ├── MapBuilder.luau       # shared ground + spawn; exposes DigCenter / DigRadius
-    │       ├── BaseManager.luau      # the 10 base buildings, podiums, plates, incubators, stairs, shared dig lane + rebirth walls
+    │       ├── BaseManager.luau      # the 10 base buildings, podiums, plates, incubators, stairs, ghost Buy-Plot podium, shared dig lane + rebirth walls; brainrot Lv label + tag/ClickDetector
     │       ├── BrainrotFactory.luau  # builds a brainrot model (Creator Store asset OR procedural placeholder) + variant glow + label
     │       ├── DiggingManager.luau   # server-authoritative digging: RollEggs / Dig, proximity + cooldown + cap checks
-    │       ├── IncubationManager.luau# PlaceEgg / CollectIncubator: hatch timing, base+variant roll, Mythic ascension
-    │       ├── EconomyManager.luau   # passive income loop, per-brainrot cash accrual + collect, BuyPlot, SellBrainrot
-    │       ├── UpgradeManager.luau   # UpgradeShovel (Cash) / UpgradeLuck / UpgradeHatchSpeed (gem-purchased)
-    │       ├── StandManager.luau     # builds the 3 in-world upgrade stands + bacon-hair NPC vendors, instant-E prompts
-    │       └── RebirthManager.luau   # Rebirth: milestone+gem checks, reset, zone unlock, permanent luck
+    │       ├── IncubationManager.luau# PlaceEgg / CollectIncubator: hatch timing (0.5s floor), base+variant roll, Mythic ascension
+    │       ├── EconomyManager.luau   # passive income loop (tier+variant+level+rebirth), per-brainrot cash accrual + collect, BuyPlot, SellBrainrot, LevelBrainrot
+    │       ├── UpgradeManager.luau   # UpgradeShovel / UpgradeIncubator / UpgradeLuck (per-tier Cash-or-Gems currency)
+    │       ├── StandManager.luau     # builds the 3 in-world upgrade stands + bacon-hair NPC vendors, instant-E prompts (StandType attr)
+    │       └── RebirthManager.luau   # Rebirth: 3-requirement check (LifetimeCash/Gems/zone), reset Cash+LifetimeCash only, recompute permanent multipliers
     │
     └── Client/                  # -> StarterPlayer.StarterPlayerScripts.Client
         ├── Main.client.luau         # entry point: builds the whole UI in code, wires effects/net, starts state
@@ -73,10 +74,11 @@ robloxrename/
             ├── TopBar.luau          # top-center Cash/Gem counters + zone label
             ├── HUD.luau             # always-on incubator panel: progress bar, countdown, COLLECT
             ├── Backpack.luau        # 🎒 toggle panel: eggs per rarity, capacity line, click to PlaceEgg
-            ├── Stands.luau          # 3 in-world stand tier-list panels (Shovel/HatchSpeed/Luck), opened by ProximityPrompt
-            ├── Collection.luau      # owned brainrots grouped by tier, variant-colored cards, Sell button
-            ├── Rebirth.luau         # rebirth progress + confirm step
-            └── SideNav.luau         # right-side buttons toggling Collection/Rebirth modals
+            ├── Stands.luau          # 3 in-world stand tier-list panels (Shovel/Incubator/Luck), opened by ProximityPrompt (StandType attr)
+            ├── LevelUp.luau         # per-brainrot level-up panel, opened by clicking your brainrot's podium model (Brainrot tag + ClickDetector)
+            ├── Collection.luau      # owned brainrots grouped by tier, variant-colored cards, Lv badge, Sell button
+            ├── Rebirth.luau         # rebirth progress (LifetimeCash bar) + confirm-step multiplier preview
+            └── SideNav.luau         # right-side buttons toggling Collection/Rebirth modals (stands open via proximity, not here)
 ```
 
 ### How `default.project.json` maps `src/` into the DataModel
@@ -116,11 +118,12 @@ Then connect the **Rojo Studio plugin** and press **Play**. For DataStore saving
 - **Config-driven balance.** All numbers/tables live in `src/Shared/Config/*`. Tune gameplay **there**, not in manager logic.
 - **Managers with `init()`.** Each `src/Server/Managers/*` is a ModuleScript; `Bootstrap.server.luau` requires it and calls `init()` (which registers its `Net` handlers). Cross-manager references that would cycle (e.g. BaseManager ↔ Incubation/Economy/Rebirth) are wired via setter injection (`setBaseManager`, `setRebirthHandler`) from Bootstrap.
 - **Code-built UI.** No StarterGui instances. `Main.client.luau` builds one root `ScreenGui` and every panel via `UIUtil` helpers (`frame`, `label`, `button`, `modal`, `corner`, `stroke`, `pop`).
-- **Per-slot BaseManager state.** Base structures are keyed by **slot** (1..10), not by player. State tables: `slotFolder`, `slotPodiums`, `slotPodiumCount`, `slotModels`, `slotPlates`, `slotSign`, `slotIncubator`, `slotStairBarrier`, `slotGhostPlot`, plus a dynamic `slotOccupant` / `playerSlot` lookup. (Rebirth gating is **not** per-slot — the walls belong to the single shared central dig lane.) Joining a player only marks the slot occupant, renames the sign, rebuilds podiums to plot count, and loads their brainrots.
+- **Per-slot BaseManager state.** Base structures are keyed by **slot** (1..10), not by player. State tables: `slotFolder`, `slotPodiums`, `slotPodiumCount`, `slotModels`, `slotPlates`, `slotSign`, `slotIncubator`, `slotStairBarrier`, `slotGhostPlot`, plus a dynamic `slotOccupant` / `playerSlot` lookup. `slotGhostPlot` is the per-slot ghost "🔒 Buy Plot" podium (a `ClickDetector` routing to `EconomyManager.buyPlot`) shown at the next free index for an occupied base under `MaxPlots` — there is **no** shop UI for plots. (Rebirth gating is **not** per-slot — the walls belong to the single shared central dig lane.) Joining a player only marks the slot occupant, renames the sign, rebuilds podiums to plot count, and loads their brainrots.
 - **Constants-driven geometry.** Layout is tuned via named constants, never magic numbers inline:
   - `BaseManager`: `LOBBY_RADIUS`, `ARC_SPAN_DEG`, `MAX_SLOTS`, `FLOOR`, `WALL_H`, `WALL_T`, `FLOOR2_Y`, `SEG_SIZE`, `REBIRTH_WALL`, `PLATE`, `STAIR_GAP` / `STAIR_STEPS` / `STAIR_STEP_H` / `STAIR_STEP_D` / `STAIR_FRONT_LZ` / `STAIR_ENTRANCE_LZ`.
   - `MapBuilder`: `DigCenter`, `DigRadius`.
-- **One income math source.** `Shared/Modules/BrainrotMath.income(entry, zone)` is used by **both** the server (payout) and client (preview) so displayed numbers always match payouts.
+- **One income math source.** `Shared/Modules/BrainrotMath.income(entry, rebirthCount)` is used by **both** the server (payout) and client (preview) so displayed numbers always match payouts. Income is **tier-based** (`BrainrotConfig.TierIncome`) × variant × per-brainrot level (`1.2^(level-1)`) × the rebirth multipliers (cash `1.2^rb`, gems `1.5^rb`); it returns **per-second** (per-minute ÷ 60). `entry.level` defaults to 1. Pass the player's **rebirth count**, never a zone — `ZoneConfig.CashScale/GemScale` are no longer income drivers.
+- **Rebirth persists progress.** A rebirth is **not** a wipe: it resets ONLY `Cash` + `LifetimeCash` to 0 and recomputes the derived multipliers; `Gems`, all upgrade tiers, `Plots`, and the entire `Collection` (each entry keeps its `.level`) carry over. The rebirth reward is the permanent compounding income multiplier (no luck bonus).
 - **`AssetConfig` maps brainrot names → Creator Store asset IDs.** `nil` ⇒ a chunky procedural placeholder via `BrainrotFactory`. Swap real IDs in `AssetConfig.luau` only.
 
 ---
@@ -133,7 +136,9 @@ The server calls `Net.setupServer()` once (creates a `Remotes` folder under `Rep
 `PushState`, `Notify`, `HatchResult`, `FloatingText`, `ScreenShake`
 
 **Functions (client → server, `RemoteFunction`, return `{ok=…, …}`):**
-`RequestState`, `RollEggs`, `Dig`, `PlaceEgg`, `CollectIncubator`, `BuyPlot`, `UpgradeShovel`, `UpgradeLuck`, `UpgradeHatchSpeed`, `Rebirth`, `SellBrainrot`
+`RequestState`, `RollEggs`, `Dig`, `PlaceEgg`, `CollectIncubator`, `BuyPlot`, `UpgradeShovel`, `UpgradeIncubator`, `UpgradeLuck`, `LevelBrainrot`, `Rebirth`, `SellBrainrot`
+
+(`UpgradeIncubator` is the renamed `UpgradeHatchSpeed`; `LevelBrainrot(id)` levels a single owned brainrot.)
 
 These exact strings are the contract — match them precisely on both sides.
 
@@ -142,25 +147,25 @@ These exact strings are the contract — match them precisely on both sides.
 ## 6. Per-module map
 
 ### Server managers (`src/Server/Managers/*`)
-- **PlayerData** — authoritative profiles. DataStore (`HatchABrainrot_v1`) load/save with retries + reconcile of new fields; in-memory `cache`/`dirty`; `snapshot()` builds the derived client payload (next plot cost, egg capacity, total luck, hatch reduction, rebirth readiness); `push()` fires `PushState`; periodic autosave + `BindToClose` final save. Falls back to non-persistent profiles if the DataStore is unavailable (and refuses to overwrite real data on a failed load via `__doNotSave`).
+- **PlayerData** — authoritative profiles. DataStore (`HatchABrainrot_v1`) load/save with retries; in-memory `cache`/`dirty`. Saved fields: `Cash`, `Gems`, `LifetimeCash` (Cash earned since last rebirth; drives the rebirth milestone; resets on rebirth), `Rebirths`, `GemMultiplier`/`CashMultiplier`/`LevelCostMultiplier` (all derived from `Rebirths`), `ShovelLevel`, `IncubatorLevel`, `LuckLevel`, `Plots`, `CurrentZone`, `Eggs`, `Incubator`, and `Collection` (each entry has `.level`). `reconcile()` migrates the old `HatchSpeedLevel` → `IncubatorLevel`, defaults each `entry.level=1`, and recomputes the rebirth-derived multipliers. `snapshot()` builds the derived client payload (next plot cost, egg capacity, total luck, incubator reduction, dig-speed mult, `RebirthMilestone`/`RebirthGemCost`, and `RebirthReady` = all 3 requirements met); `push()` fires `PushState`; periodic autosave + `BindToClose` final save. Falls back to non-persistent profiles if the DataStore is unavailable (and refuses to overwrite real data on a failed load via `__doNotSave`).
 - **MapBuilder** — builds the shared `World` (big grass ground + neutral `SpawnLocation`). Exposes `DigCenter`/`DigRadius` consumed by BaseManager.
-- **BaseManager** — the heaviest module. Pre-builds **10 two-floor base buildings** in a rounded half-circle ring facing center; podiums along the side window walls (6/side/floor, up to 24); green pressure plates per podium (Touched → `EconomyManager.collect`); per-slot incubator out the open front; a back-center **staircase** to floor 2 gated by `StairBarrier`; and the **single shared dig lane** with **rebirth walls** between zones (`buildSharedLane` / `buildSharedWall`). Public: `assignBase`, `freeBase`, `placeBrainrot`, `removeBrainrot`, `rebuildPlots`, `getIncubatorPosition`, `getOrigin`, `updateStaircase`, `startGateUpdater`, `setRebirthHandler`.
-- **BrainrotFactory** — `build(entry, zone)` returns an anchored model: Creator Store asset (via `InsertService:LoadAsset`, normalized to uniform size) if `AssetConfig` has an id, otherwise a procedural placeholder (ball body + eyes + feet). Adds variant glow (PointLight + sparkles, rainbow shimmer for Galaxy) and a billboard name/income label. Exposes `PODIUM_SIZE`.
+- **BaseManager** — the heaviest module. Pre-builds **10 two-floor base buildings** in a rounded half-circle ring facing center; podiums along the side window walls (6/side/floor, up to 24); green pressure plates per podium (Touched → `EconomyManager.collect`); per-slot incubator out the open front; a back-center **staircase** to floor 2 gated by `StairBarrier`; the per-slot **ghost "🔒 Buy Plot" podium** (`ClickDetector` → `EconomyManager.buyPlot`); and the **single shared dig lane** with **rebirth walls** between zones (`buildSharedLane` / `buildSharedWall`). On placing a brainrot it adds a **"Lv N" billboard**, stamps a `BrainrotId` attribute, parents a `ClickDetector`, and tags the model `Brainrot` (CollectionService) so the client `LevelUp` panel can wire it up; `startGateUpdater` keeps plate labels + Lv billboards + ghost-plot affordability in sync. Public: `assignBase`, `freeBase`, `placeBrainrot`, `removeBrainrot`, `refreshBrainrotLabel`, `rebuildPlots`, `getIncubatorPosition`, `getOrigin`, `updateStaircase`, `updateRebirthGate` (no-op stub), `startGateUpdater`, `setRebirthHandler`.
+- **BrainrotFactory** — `build(entry, rebirthCount)` returns an anchored model: Creator Store asset (via `InsertService:LoadAsset`, normalized to uniform size) if `AssetConfig` has an id, otherwise a procedural placeholder (ball body + eyes + feet). Adds variant glow (PointLight + sparkles, rainbow shimmer for Galaxy) and a billboard name/income label (income via `BrainrotMath` with the rebirth count). Exposes `PODIUM_SIZE`.
 - **DiggingManager** — `RollEggs(count, zone)` pre-assigns luck-weighted rarities to mounds (keyed by server id, capped by `MAX_PENDING`/`MAX_ROLL_BATCH`); `Dig(id)` validates a **rarity-aware, shovel-scaled cooldown** (`cd = ShovelConfig.holdDuration(rarity, mult) * 0.85`, so rarer eggs / slower shovels enforce a longer dig), `DigPatch` proximity, backpack cap, then grants the egg and pre-rolls the mound's next rarity. (The flat `GameConfig.DigCooldown` is superseded and kept only as a reference.) Luck shifts odds toward Uncommon/Rare/Legendary.
-- **IncubationManager** — `PlaceEgg(rarity)`: incubator proximity (`INCUBATOR_RANGE`), spends egg + Cash hatch cost, starts a timer of `Incubation * (1 - HatchReduction)`. `CollectIncubator`: once `GetServerTimeNow()` passes `endTime`, rolls a base brainrot of the egg tier available in the zone (Legendary can **ascend to Mythic** in zone 2+) + a luck-weighted variant, appends to `Collection`, places the model, fires `HatchResult` + `ScreenShake`.
-- **EconomyManager** — passive income loop (every `IncomeTickSeconds`): per brainrot, **cash accrues** per-brainrot (capped, collected at its plate via `collect`); **gems auto-credit** (fractional accumulator → floor → `FloatingText`). Also `buyPlot` (Cash, escalating cost — now reached by clicking the per-slot **ghost plot podium** on the base, server-authoritative as before), `sellBrainrot` (refund ≈ 30 cycles of cash). `getAccrued` feeds the plate labels.
-- **UpgradeManager** — `UpgradeShovel` (Cash, validated against `ShovelConfig` Cash cost + level cap) / `UpgradeLuck` (10 tiers) / `UpgradeHatchSpeed` (9 named tiers, gem-purchased), escalating cost, validated against `UpgradeConfig`. Hatch speed effect hard-capped at 85%.
-- **StandManager** — `init()` builds the **3 physical upgrade stands** near the lobby spawn, each staffed by a procedural classic "bacon hair" NPC vendor and carrying an **instant** `ProximityPrompt` (HoldDuration 0) with a `StandType` attribute (`"Shovel"`/`"HatchSpeed"`/`"Luck"`). No server-side open handler — the client reads the attribute to open the matching panel and purchases go through the `Upgrade*` remotes.
-- **RebirthManager** — `Rebirth`: requires the Cash milestone, requires that a rebirth actually unlocks a new zone, charges gems, resets Cash + Collection + Incubator, advances `CurrentZone`, grants permanent luck (via `Rebirths` count). Triggered from the UI **and** from clicking a shared rebirth wall (via `setRebirthHandler`).
+- **IncubationManager** — `PlaceEgg(rarity)`: incubator proximity (`INCUBATOR_RANGE`), spends egg + Cash hatch cost, starts a timer of `max(0.5, Incubation * (1 - incubatorReduction))` (the **0.5s hatch floor** lives here). `CollectIncubator`: once `GetServerTimeNow()` passes `endTime`, rolls a base brainrot of the egg tier available in the zone (Legendary can **ascend to Mythic** in zone 2+) + a luck-weighted variant, appends to `Collection` at **level 1**, places the model, fires `HatchResult` + `ScreenShake`.
+- **EconomyManager** — passive income loop (every `IncomeTickSeconds`): per brainrot, `BrainrotMath.income(entry, profile.Rebirths)` → **cash accrues** per-brainrot (capped, collected at its plate via `collect`, which also adds to `LifetimeCash`); **gems auto-credit** (fractional accumulator → floor → `FloatingText`). Also `buyPlot` (Cash, escalating cost — reached by clicking the per-slot **ghost plot podium**), `sellBrainrot` (refund ≈ 30 cycles of cash; NOT credited to `LifetimeCash`), and `levelBrainrot(id)` (level a single brainrot: Cash L2-5 / Gems L6-10, base cost × `levelCostMultiplier`, cap 10, persists through rebirth). `getAccrued` feeds the plate labels.
+- **UpgradeManager** — `buyShovel`/`buyIncubator`/`buyLuck` behind `UpgradeShovel` / `UpgradeIncubator` (was `UpgradeHatchSpeed`) / `UpgradeLuck`. Each validates the next tier's **per-tier currency** (Shovel & Incubator: Cash 1-5 / Gems 6-9; Luck: all Gems), level cap (9), and charges the player; all costs/currencies live in `ShovelConfig` / `UpgradeConfig`.
+- **StandManager** — `init()` builds the **3 physical upgrade stands** near the lobby spawn (yellow `SpawnLocation`), each staffed by a procedural classic "bacon hair" NPC vendor and carrying an **instant** `ProximityPrompt` (HoldDuration 0) with a `StandType` attribute (`"Shovel"`/`"Incubator"`/`"Luck"`). No server-side open handler — the client reads the attribute to open the matching panel and purchases go through the `Upgrade*` remotes.
+- **RebirthManager** — `Rebirth`: requires **all three** of `LifetimeCash ≥ cashMilestone(Rebirths)`, `Gems ≥ gemCost(Rebirths)`, and `CurrentZone == highestUnlocked(Rebirths)` (no "must unlock a new zone" gate — rebirths continue past the last zone). On success: charge Gems, reset **only** `Cash` + `LifetimeCash` to 0, bump `Rebirths`, recompute the permanent compounding multipliers (gems `1.5^rb`, cash `1.2^rb`, level-cost `1.5^rb`), advance to the highest unlocked zone. Collection (with levels), Gems, tiers, plots and the in-progress Incubator all **persist**; no luck bonus. Triggered from the UI **and** from clicking a shared rebirth wall (via `setRebirthHandler`).
 
 ### Client (`src/Client/*`)
-- **Main.client** — builds the root `ScreenGui` and every UI panel; wires `Effects` into `ClientNet`; starts `DigSite` and `ClientState`.
+- **Main.client** — builds the root `ScreenGui` and every UI panel; wires `Effects` into `ClientNet`; starts `Stands`, `LevelUp`, `DigSite`, and `ClientState`. The `SideNav` only toggles `Collection` + `Rebirth`.
 - **ClientNet** — `invoke(funcName, ...)` wraps `RemoteFunction:InvokeServer` in pcall and toasts `result.reason` on failure.
 - **ClientState** — subscribes to `PushState`, stores the latest snapshot, calls every `onChanged` listener; also pulls an initial snapshot via `RequestState` (retries to beat the join race).
 - **DigSite** — scatters per-client dirt patches + lazily-built **pixel/voxel eggs** on every `DigPatch`-tagged lane slab; `ProximityPrompt` (E, `HoldDuration` from `ShovelConfig.holdDuration` — scales with rarity and the player's shovel) animates the egg popping in stages; calls `Dig` on trigger and `RollEggs` to seed a patch.
 - **Sounds** — pooled `Sound` playback from `AssetConfig.Sounds`.
 - **UIUtil** — the code-UI toolkit + `Colors`/`Font` palette.
-- **UI/** — `Effects` (juice), `TopBar` (currency + zone), `HUD` (incubator panel), `Backpack` (eggs → PlaceEgg), `Stands` (3 in-world stand panels — Shovel/HatchSpeed/Luck — opened via `ProximityPromptService.PromptTriggered` reading the `StandType` attribute, started from `Main.client` via `Stands.start(screen)`), `Collection` (owned brainrots + Sell), `Rebirth` (rebirth flow), `SideNav` (modal toggles).
+- **UI/** — `Effects` (juice), `TopBar` (Cash + Gems counters + zone label), `HUD` (incubator panel), `Backpack` (eggs → PlaceEgg), `Stands` (3 in-world stand panels — Shovel/Incubator/Luck — each listing all 9 tiers with the correct $/💎 per tier, opened via `ProximityPromptService.PromptTriggered` reading the `StandType` attribute, started from `Main.client` via `Stands.start(screen)`), `LevelUp` (per-brainrot level-up panel opened by clicking a `Brainrot`-tagged podium model's `ClickDetector`; previews next-level income + exact cost, invokes `LevelBrainrot`), `Collection` (owned brainrots + Lv badge + Sell), `Rebirth` (LifetimeCash progress bar + confirm-step multiplier preview), `SideNav` (Collection/Rebirth modal toggles).
 
 ---
 
@@ -170,17 +175,21 @@ These exact strings are the contract — match them precisely on both sides.
 |---|---|
 | **Egg backpack cap** (5 base, +5/rebirth, max 50) | `GameConfig.EggCapacityBase/PerRebirth/Max` + `GameConfig.eggCapacity()`; enforced in `DiggingManager.dig` |
 | **Server-assigned dig rarity + pixel egg** | `DiggingManager.rollEggs/dig` (server) + `DigSite` voxel egg rendering (client) |
-| **Incubator-proximity hatching** | `IncubationManager` (`INCUBATOR_RANGE`) using `BaseManager.getIncubatorPosition` |
-| **Pressure-plate cash collection** | `BaseManager.buildPlate` Touched → `EconomyManager.collect`; cash accrues in `EconomyManager.startIncomeLoop`; gems auto-credit |
+| **Incubator-proximity hatching** (0.5s hatch floor) | `IncubationManager` (`INCUBATOR_RANGE`, `max(0.5, …)`) using `BaseManager.getIncubatorPosition` |
+| **Pressure-plate cash collection** | `BaseManager.buildPlate` Touched → `EconomyManager.collect` (also credits `LifetimeCash`); cash accrues in `EconomyManager.startIncomeLoop`; gems auto-credit |
+| **Income formula** (tier-based, NOT zone-scaled) | `BrainrotMath.income(entry, rebirthCount)`: cash/min = `tierCash × variant.CashMult × 1.2^(level-1) × 1.2^rb`, gem/min = `(tierGem + variant.GemBonus) × 1.2^(level-1) × 1.5^rb`, ÷60 for per-second. Tier table = `BrainrotConfig.TierIncome` (Common 10c/0g, Uncommon 35c/0g, Rare 120c/1g, Legendary 500c/5g, Mythic 2000c/15g); variants CashMult 1/3/8/25, gem/min add 0/1/3/8 |
+| **Brainrot leveling** (cap 10, ×1.2/level, persists rebirth) | `BrainrotConfig.Levels` (L2-5 Cash 200/600/1500/3500, L6-10 Gems 500/1200/3000/7500/18000) × `levelCostMultiplier` (`1.5^rb`); `EconomyManager.levelBrainrot` (`LevelBrainrot` remote); `Client/UI/LevelUp` panel via the `Brainrot` tag + ClickDetector + Lv billboard (`BaseManager`) |
 | **Shared central dig lane + rebirth walls** | `BaseManager.buildSharedLane` / `buildSharedWall` / `buildZoneArea` (tagged `DigPatch`, `Zone` attribute) |
 | **Two-floor bases + staircase unlock** | `BaseManager.buildBuilding` (`FLOOR2_Y`, `STAIR_*`) + `updateStaircase` (opens once occupant owns all 12 floor-1 plots) |
-| **Zones & variants** | `ZoneConfig` (odds/scaling/unlock), `VariantConfig` (mults/weights/luck bias), `BrainrotMath.income` for payout |
+| **Zones & variants** | `ZoneConfig` (odds/unlock; `CashScale`/`GemScale` kept but UNUSED by income), `VariantConfig` (mults/gem-add/weights/luck bias), `BrainrotMath.income` for payout |
 | **Mythic ascension** (zone 2+ only) | `IncubationManager.rollBase` (Legendary egg → Mythic chance) |
 | **Asset → model mapping** | `AssetConfig.Brainrots` (id or `nil`) consumed by `BrainrotFactory.build` |
-| **Rebirth rules / luck / hatch speed** | `UpgradeConfig` (Luck = 10 tiers, HatchSpeed = 9 named tiers capped 85% via `MaxHatchSpeedReduction`; helpers: `totalLuck`, `hatchReduction`, `rebirthGemCost`) |
-| **Dig-speed shovels** (Cash, 9 named tiers Wood→Galaxy) | `ShovelConfig` (`DigSpeedMult`, `Stages`/`PerStage`/`holdDuration`/`CooldownTolerance`) consumed by `DigSite` (prompt hold) + `DiggingManager` (cooldown); bought via `UpgradeManager.buyShovel` |
-| **Upgrade access (in-world stands, no shop icon)** | `StandManager` builds 3 stands + bacon NPCs with instant-E prompts (`StandType` attr); `Client/UI/Stands` opens the matching tier-list panel |
-| **Plot buying (base ghost podium)** | per-slot `slotGhostPlot` ghost "🔒 Buy Plot" podium built by `BaseManager`; occupant click routes through `EconomyManager.buyPlot` (`BuyPlot` remote) |
+| **Rebirth** (keeps Collection; permanent compounding multipliers) | `RebirthManager.rebirth` requires ALL 3 (LifetimeCash `≥ cashMilestone`, Gems `≥ gemCost`, `CurrentZone == highestUnlocked`); resets only Cash + LifetimeCash; rewards gems `1.5^rb` / cash `1.2^rb` / level-cost `1.5^rb`. `UpgradeConfig`: `cashMilestone` 50k/150k/400k/1M/2.5M then ×2.5, `gemCost` 500/875/1531/2678/4687 then ×1.75; no luck bonus |
+| **Luck** (Gems, 9 tiers, tier 9 max; no rebirth bonus) | `UpgradeConfig.Luck` (50/150/400/1000/2500/6000/12000/25000/50000); `totalLuck` = sum of unlocked tier `Value`s only; `UpgradeManager.buyLuck` (`UpgradeLuck`) |
+| **Incubator** (Cash 1-5 / Gems 6-9, 9 named tiers, hatch-time reduction) | `UpgradeConfig.Incubator` (Cash 100/300/800/2000/5000, Gems 200/600/1500/4000); `incubatorReduction(level)`; `UpgradeManager.buyIncubator` (`UpgradeIncubator`, was `UpgradeHatchSpeed`); 0.5s floor in `IncubationManager` |
+| **Dig-speed shovels** (Cash 1-5 / Gems 6-9, 9 tiers Wood→Galaxy) | `ShovelConfig` (Cash 50/150/400/1000/2500, Gems 100/300/800/2000; `DigSpeedMult`, `Stages`/`PerStage`/`holdDuration`/`MinDigTime` 0.3s floor/`CooldownTolerance`) consumed by `DigSite` (prompt hold) + `DiggingManager` (cooldown); bought via `UpgradeManager.buyShovel` |
+| **Upgrade access (in-world stands, no shop icon)** | `StandManager` builds 3 stands + bacon NPCs with instant-E prompts (`StandType` attr `Shovel`/`Incubator`/`Luck`); `Client/UI/Stands` opens the matching tier-list panel |
+| **Plot buying (base ghost podium, no shop)** | per-slot `slotGhostPlot` ghost "🔒 Buy Plot" podium built by `BaseManager`; occupant click routes through `EconomyManager.buyPlot` (`BuyPlot` remote). Cost curve (`GameConfig.plotCost`): Nth slot beyond `StartingPlots`(3) = 100/300/800/2000/5000/12000 then DOUBLES each slot after the 6th; `MaxPlots` 24 |
 
 ---
 

@@ -12,13 +12,17 @@ local Workspace = game:GetService("Workspace")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ZoneConfig = require(ReplicatedStorage.Shared.Config.ZoneConfig)
+local Palette = require(ReplicatedStorage.Shared.Config.Palette)
 
 local MapBuilder = {}
 
 local function makePart(props: { [string]: any }): BasePart
 	local p = Instance.new("Part")
 	p.Anchored = true
-	p.Material = Enum.Material.SmoothPlastic
+	-- legoish look: glossy plastic + classic Roblox studs on top, inlets underneath
+	p.Material = Enum.Material.Plastic
+	p.TopSurface = Enum.SurfaceType.Studs
+	p.BottomSurface = Enum.SurfaceType.Inlet
 	for k, v in pairs(props) do
 		(p :: any)[k] = v
 	end
@@ -28,6 +32,48 @@ end
 -- ring center + base sizing used by BaseManager (lanes fan out from here)
 MapBuilder.DigCenter = Vector3.new(0, 0, 0)
 MapBuilder.DigRadius = 34
+
+-- Frames the play area with a thick DIRT CLIFF capped by SNOW (grass-cliff look,
+-- snow on top). A square ring centered at (0, *, 30), inner half-extent 340 studs:
+-- inner faces sit at x=+/-320 and z=-290 / +350 — all OUTSIDE the bases (~radius
+-- 250), the dig lane (z~302) and the stands (z~-92), with margin. The dirt walls
+-- collide so players can't leave the map.
+local function buildBorder(folder: Folder)
+	-- { XZ center, dirt size } for each of the 4 ring walls.
+	local walls = {
+		{ pos = Vector3.new(-340, 0, 30), size = Vector3.new(40, 55, 720) },  -- WEST
+		{ pos = Vector3.new(340, 0, 30), size = Vector3.new(40, 55, 720) },   -- EAST
+		{ pos = Vector3.new(0, 0, -310), size = Vector3.new(720, 55, 40) },   -- SOUTH
+		{ pos = Vector3.new(0, 0, 370), size = Vector3.new(720, 55, 40) },    -- NORTH
+	}
+
+	for _, w in ipairs(walls) do
+		-- dirt cliff: base sits on the ground, centered at y = 1 + 55/2
+		makePart({
+			Name = "BorderDirt",
+			Size = w.size,
+			Color = Palette.Dirt,
+			Material = Enum.Material.Ground,
+			Anchored = true,
+			CanCollide = true,
+			CFrame = CFrame.new(w.pos.X, 1 + 55 / 2, w.pos.Z),
+			Parent = folder,
+		})
+
+		-- snow cap on top: same XZ footprint + 4 studs on each horizontal axis,
+		-- height 8, sitting on top of the 55-tall dirt at y = 1 + 55 + 8/2
+		makePart({
+			Name = "BorderSnow",
+			Size = Vector3.new(w.size.X + 4, 8, w.size.Z + 4),
+			Color = Palette.Snow,
+			Material = Enum.Material.Snow,
+			Anchored = true,
+			CanCollide = true,
+			CFrame = CFrame.new(w.pos.X, 1 + 55 + 8 / 2, w.pos.Z),
+			Parent = folder,
+		})
+	end
+end
 
 function MapBuilder.build()
 	local folder = Workspace:FindFirstChild("World") :: Folder
@@ -42,7 +88,7 @@ function MapBuilder.build()
 	makePart({
 		Name = "Ground",
 		Size = Vector3.new(1200, 2, 1200),
-		Color = Color3.fromRGB(120, 210, 110),
+		Color = Palette.Grass, -- vivid lime play-ground grass
 		Material = Enum.Material.Grass,
 		CFrame = CFrame.new(0, 0, 200),
 		Parent = folder,
@@ -58,6 +104,9 @@ function MapBuilder.build()
 	spawn.CFrame = CFrame.new(0, 1.6, -70)
 	spawn.Neutral = true
 	spawn.Parent = folder
+
+	-- frame the play area with a snow-capped dirt cliff
+	buildBorder(folder)
 
 	return folder
 end

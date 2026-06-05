@@ -21,6 +21,7 @@ local EconomyManager = require(Managers.EconomyManager)
 local UpgradeManager = require(Managers.UpgradeManager)
 local RebirthManager = require(Managers.RebirthManager)
 local StandManager = require(Managers.StandManager)
+local LeaderboardManager = require(Managers.LeaderboardManager)
 
 -- 1. remotes
 Net.setupServer()
@@ -34,6 +35,9 @@ BaseManager.init()
 -- shared upgrade stands + bacon-hair vendors near the lobby spawn (after the
 -- world/bases exist; only depends on MapBuilder.build having run)
 StandManager.init()
+-- in-world leaderboards mounted on the two zone1/2 fences (needs BaseManager.init's
+-- fences to already exist)
+LeaderboardManager.init()
 
 -- inject BaseManager into managers that need to touch podium models
 IncubationManager.setBaseManager(BaseManager)
@@ -72,12 +76,14 @@ local function onJoin(player: Player)
 	PlayerData.load(player)
 	BaseManager.assignBase(player)
 
-	-- faster movement: set WalkSpeed on every spawn (and on the current character)
+	-- faster movement + the zone-gate collision group on every spawn (and current char)
 	player.CharacterAdded:Connect(function(char)
 		applyWalkSpeed(char)
+		BaseManager.applyZoneGate(player)
 	end)
 	if player.Character then
 		applyWalkSpeed(player.Character)
+		BaseManager.applyZoneGate(player)
 	end
 
 	-- give the client a moment to set up its remotes/UI then push state
@@ -100,11 +106,26 @@ Players.PlayerAdded:Connect(onJoin)
 Players.PlayerRemoving:Connect(onLeave)
 
 -- final save on server shutdown
+-- Roblox force-closes the server after ~30s. Save every player in PARALLEL (one
+-- coroutine each, so the SetAsync calls overlap instead of running back-to-back)
+-- and poll until all of them finish or a 25s deadline passes, so the later
+-- players don't lose their last session (e.g. a just-completed rebirth).
 game:BindToClose(function()
-	for _, player in ipairs(Players:GetPlayers()) do
-		PlayerData.save(player)
+	local players = Players:GetPlayers()
+	local remaining = #players
+	if remaining == 0 then
+		return
 	end
-	task.wait(1)
+	for _, player in ipairs(players) do
+		task.spawn(function()
+			pcall(PlayerData.save, player)
+			remaining -= 1
+		end)
+	end
+	local deadline = os.clock() + 25
+	while remaining > 0 and os.clock() < deadline do
+		task.wait(0.1)
+	end
 end)
 
 print("[HatchABrainrot] Server ready.")

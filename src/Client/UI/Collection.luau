@@ -21,10 +21,11 @@ local Collection = {}
 
 local TIER_ORDER = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" }
 
-local function makeCard(parent: Instance, entry: any, zone: number, order: number)
+local function makeCard(parent: Instance, entry: any, rebirths: number, order: number)
 	local variantColor = RarityColors.variant(entry.variant)
 	local tierColor = RarityColors.tier(entry.tier)
 	local base = BrainrotConfig.get(entry.base)
+	local level = entry.level or 1
 
 	local card = UIUtil.frame({
 		Size = UDim2.new(1, -8, 0, 76),
@@ -50,7 +51,7 @@ local function makeCard(parent: Instance, entry: any, zone: number, order: numbe
 	UIUtil.stroke(swatch, 3, variantColor)
 
 	local nameLabel = UIUtil.label({
-		Size = UDim2.new(0.55, 0, 0, 28),
+		Size = UDim2.new(0.42, 0, 0, 28),
 		Position = UDim2.new(0, 76, 0, 8),
 		Text = entry.base,
 		TextColor3 = tierColor,
@@ -59,7 +60,18 @@ local function makeCard(parent: Instance, entry: any, zone: number, order: numbe
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.ZIndex = 23
 
-	local cash, gems = BrainrotMath.income(entry, zone)
+	-- current level badge ("Lv N") to the right of the name
+	local levelLabel = UIUtil.label({
+		Size = UDim2.new(0.12, 0, 0, 28),
+		Position = UDim2.new(0.50, 76, 0, 8),
+		Text = ("Lv %d"):format(level),
+		TextColor3 = Color3.fromRGB(255, 235, 130),
+		Parent = card,
+	})
+	levelLabel.TextXAlignment = Enum.TextXAlignment.Left
+	levelLabel.ZIndex = 23
+
+	local cash, gems = BrainrotMath.income(entry, rebirths)
 	local sub = UIUtil.label({
 		Size = UDim2.new(0.55, 0, 0, 30),
 		Position = UDim2.new(0, 76, 0, 38),
@@ -134,7 +146,7 @@ function Collection.build(gui: ScreenGui)
 				heading.ZIndex = 22
 				for _, e in ipairs(entries) do
 					order += 1
-					makeCard(modal.content, e, state.CurrentZone, order)
+					makeCard(modal.content, e, state.Rebirths, order)
 				end
 			end
 		end
