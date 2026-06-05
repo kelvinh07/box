@@ -27,7 +27,8 @@ HatchABrainrot/
     │   │   ├── BrainrotConfig.luau    base brainrot roster + base income/gems
     │   │   ├── VariantConfig.luau     Normal/Gold/Diamond/Galaxy mults + odds
     │   │   ├── ZoneConfig.luau        per-zone egg odds, pools, currency scaling
-    │   │   ├── UpgradeConfig.luau     Luck/Hatch Speed tiers + Rebirth rules
+    │   │   ├── UpgradeConfig.luau     Luck (10 tiers)/Hatch Speed (9 tiers, cap 85%) + Rebirth rules
+    │   │   ├── ShovelConfig.luau      dig-speed shovel: 9 named tiers + dig hold/cooldown
     │   │   └── AssetConfig.luau       Creator Store asset IDs (placeholders here)
     │   └── Modules/
     │       ├── Net.luau               RemoteEvent/Function registry
@@ -45,7 +46,8 @@ HatchABrainrot/
     │       ├── DiggingManager.luau    luck-weighted egg rolls + dig proximity
     │       ├── IncubationManager.luau hatch timers + base/variant rolling
     │       ├── EconomyManager.luau    passive income loop, plots, selling
-    │       ├── UpgradeManager.luau    Luck + Hatch Speed purchases
+    │       ├── UpgradeManager.luau    Shovel (Cash) + Luck + Hatch Speed purchases
+    │       ├── StandManager.luau      builds 3 in-world upgrade stands + bacon NPCs
     │       └── RebirthManager.luau    reset + zone unlock + permanent luck
     │
     └── Client/                    → StarterPlayer.StarterPlayerScripts.Client
@@ -58,7 +60,7 @@ HatchABrainrot/
             ├── Effects.luau           toasts, +$/+Gem popups, hatch reveal, shake
             ├── TopBar.luau            Cash/Gem counters + zone label
             ├── HUD.luau               DIG button, egg inventory, incubator bar
-            ├── Shop.luau              Luck/Hatch Speed/Plots
+            ├── Stands.luau            3 in-world stand panels (Shovel/Hatch/Luck)
             ├── Collection.luau        owned brainrots by tier + variant
             ├── Rebirth.luau           rebirth panel + confirmation
             └── SideNav.luau           toggle buttons for the modals
@@ -103,8 +105,11 @@ overwritten).
 3. Press **COLLECT** when it's ready — a brainrot + variant is revealed and
    placed on a glowing podium at your base, where it generates passive Cash
    (and Gems if it's Rare/Legendary tier or a Gold/Diamond/Galaxy variant).
-4. Open the **🛒 Shop** (right side) to upgrade **Luck** (better eggs/variants)
-   and **Hatch Speed** (faster incubation, capped at 50%), or buy more **Plots**.
+4. Walk up to the **upgrade stands** near the lobby spawn — each is run by a
+   bacon-hair vendor, just press **E** (instant) to open it: 🪓 **Shovel** (Cash,
+   faster digging), 🔥 **Hatch Speed** (Gems, faster incubation, capped at 85%),
+   and 🍀 **Luck** (Gems, better eggs/variants). Buy more **Plots** at your base
+   by clicking the **🔒 Buy Plot** podium on your next free slot.
 5. Open **📦 Collection** to view everything you own by tier + variant, or sell.
 6. Reach the Cash milestone, then hit **🔁 Rebirth** to reset, unlock the next
    **Zone** (rarer eggs, exclusive Mythic brainrots, higher payouts), and gain a

@@ -17,9 +17,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage.Shared
 local RarityColors = require(Shared.Config.RarityColors)
+local ShovelConfig = require(Shared.Config.ShovelConfig)
 
 local UIUtil = require(script.Parent.UIUtil)
 local ClientNet = require(script.Parent.ClientNet)
+local ClientState = require(script.Parent.ClientState)
 local Sounds = require(script.Parent.Sounds)
 
 local DigSite = {}
@@ -28,18 +30,22 @@ local player = Players.LocalPlayer
 local screenGui: ScreenGui
 local spotsFolder: Folder
 local lastDig = 0
+local digSpeedMult = 1 -- live shovel multiplier from the snapshot (DigSpeedMult)
 local REGROW_SECONDS = 4
-local PER_STAGE = 0.32 -- seconds of hold per pop stage
+local PER_STAGE = ShovelConfig.PerStage -- seconds of hold per pop stage (shared w/ server)
 
 local EGG_HEIGHT_BASE = 0.6 -- one "x" of egg height; egg height = mult * this
 local PATCH_D = 6.0         -- rough dirt-patch span
 local PATCH_PIECES = 3      -- slabs per patch (overlapping => uneven shape)
+-- `stages` (hold-to-dig length) is sourced from ShovelConfig.Stages so the client
+-- and the server's rarity-aware cooldown stay in lockstep; `mult` is render-only
+-- (egg visual size) and stays local.
 local RARITY = {
-	Common    = { stages = 3, mult = 8 },
-	Uncommon  = { stages = 5, mult = 10 },
-	Rare      = { stages = 7, mult = 12 },
-	Legendary = { stages = 9, mult = 15 },
-	Mythic    = { stages = 9, mult = 15 },
+	Common    = { stages = ShovelConfig.Stages.Common,    mult = 8 },
+	Uncommon  = { stages = ShovelConfig.Stages.Uncommon,  mult = 10 },
+	Rare      = { stages = ShovelConfig.Stages.Rare,      mult = 12 },
+	Legendary = { stages = ShovelConfig.Stages.Legendary, mult = 15 },
+	Mythic    = { stages = ShovelConfig.Stages.Mythic,    mult = 15 },
 }
 
 -- The egg is a PIXEL egg: cube "studs" (voxels) filling an egg ellipsoid.
@@ -203,7 +209,8 @@ local function revealEgg(rarity: string)
 end
 
 local function digSpot(spot: any)
-	if os.clock() - lastDig < 0.4 then return end
+	-- client-side debounce floor scales with the shovel mult (server still enforces the real cooldown)
+	if os.clock() - lastDig < (0.35 / digSpeedMult) then return end
 	lastDig = os.clock()
 
 	local result = ClientNet.invoke("Dig", spot.id)
@@ -254,7 +261,8 @@ function makeDigSpot(x: number, topY: number, z: number, id: string, rarity: str
 	prompt.ActionText = "Dig"
 	prompt.ObjectText = (rarity ~= "Common") and rarity or ""
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
-	prompt.HoldDuration = cfg.stages * PER_STAGE
+	prompt.HoldDuration = (cfg.stages * PER_STAGE) / digSpeedMult
+	prompt:SetAttribute("Stages", cfg.stages) -- lets the snapshot listener recompute HoldDuration live
 	prompt.MaxActivationDistance = 12
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = patch
@@ -339,6 +347,23 @@ function DigSite.start(gui: ScreenGui)
 	CollectionService:GetInstanceAddedSignal("DigPatch"):Connect(function(patch)
 		task.wait(0.1)
 		scatterPatch(patch)
+	end)
+
+	-- Shovel dig-speed: when the snapshot's DigSpeedMult changes, recompute every
+	-- existing prompt's HoldDuration from its cached "Stages". Only re-iterate when
+	-- the value actually changed so frequent snapshots don't cause churn.
+	ClientState.onChanged(function(state)
+		local m = (state and state.DigSpeedMult) or 1
+		if m == digSpeedMult then return end
+		digSpeedMult = m
+		for _, inst in ipairs(spotsFolder:GetDescendants()) do
+			if inst:IsA("ProximityPrompt") then
+				local stagesAttr = inst:GetAttribute("Stages")
+				if stagesAttr then
+					inst.HoldDuration = ((stagesAttr :: number) * PER_STAGE) / digSpeedMult
+				end
+			end
+		end
 	end)
 end
 

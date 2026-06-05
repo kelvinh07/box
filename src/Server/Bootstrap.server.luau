@@ -20,6 +20,7 @@ local IncubationManager = require(Managers.IncubationManager)
 local EconomyManager = require(Managers.EconomyManager)
 local UpgradeManager = require(Managers.UpgradeManager)
 local RebirthManager = require(Managers.RebirthManager)
+local StandManager = require(Managers.StandManager)
 
 -- 1. remotes
 Net.setupServer()
@@ -30,6 +31,9 @@ MapBuilder.build()
 -- 3. init managers (order: data + base first, then ones that depend on them)
 PlayerData.init()
 BaseManager.init()
+-- shared upgrade stands + bacon-hair vendors near the lobby spawn (after the
+-- world/bases exist; only depends on MapBuilder.build having run)
+StandManager.init()
 
 -- inject BaseManager into managers that need to touch podium models
 IncubationManager.setBaseManager(BaseManager)

@@ -19,6 +19,7 @@ local Shared = ReplicatedStorage.Shared
 local GameConfig = require(Shared.Config.GameConfig)
 local ZoneConfig = require(Shared.Config.ZoneConfig)
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
+local ShovelConfig = require(Shared.Config.ShovelConfig)
 local Util = require(Shared.Modules.Util)
 local Net = require(Shared.Modules.Net)
 
@@ -123,18 +124,25 @@ function DiggingManager.dig(player: Player, id: string): any
 		return { ok = false, reason = "No profile loaded." }
 	end
 
-	local now = os.clock()
-	if lastDig[player] and (now - lastDig[player]) < GameConfig.DigCooldown then
-		return { ok = false, reason = "Digging too fast!" }
-	end
-	if not onDigPatch(player) then
-		return { ok = false, reason = "Stand on the dig field!" }
-	end
-
 	local bag = pending[player]
 	local rarity = bag and bag[id]
 	if not rarity then
 		return { ok = false, reason = "Unknown dig spot." }
+	end
+
+	local now = os.clock()
+	-- RARITY-AWARE, shovel-scaled cooldown. The client gates each mound by a
+	-- per-rarity hold time (rarer = longer); the server MUST enforce that same
+	-- longer time or an exploiter could pull Legendaries at the Common rate. We
+	-- mirror the client's holdDuration(rarity, mult) and shave it by CooldownTolerance
+	-- so latency on a fully-held dig never gets falsely rejected.
+	local mult = ShovelConfig.digSpeedMult(profile.ShovelLevel)
+	local cd = ShovelConfig.holdDuration(rarity, mult) * ShovelConfig.CooldownTolerance
+	if lastDig[player] and (now - lastDig[player]) < cd then
+		return { ok = false, reason = "Digging too fast!" }
+	end
+	if not onDigPatch(player) then
+		return { ok = false, reason = "Stand on the dig field!" }
 	end
 
 	-- TOTAL backpack cap (scales with rebirths). Count all eggs the player holds

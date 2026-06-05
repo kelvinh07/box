@@ -30,7 +30,9 @@ Net.Functions = {
 	"CollectIncubator",   -- claim a finished hatch
 	"BuyPlot",            -- buy another brainrot plot
 	"UpgradeLuck",        -- spend gems on Luck
-	"UpgradeHatchSpeed",  -- spend gems on Hatch Speed
+	"UpgradeIncubator",   -- spend cash/gems on the Incubator track (was UpgradeHatchSpeed)
+	"UpgradeShovel",      -- spend cash/gems on a faster dig shovel
+	"LevelBrainrot",      -- level up a single owned brainrot (Cash L2-5 / Gems L6-10)
 	"Rebirth",            -- perform a rebirth
 	"SellBrainrot",       -- sell an owned brainrot for cash
 }

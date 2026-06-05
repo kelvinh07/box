@@ -12,6 +12,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 local GameConfig = require(Shared.Config.GameConfig)
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
+local ShovelConfig = require(Shared.Config.ShovelConfig)
 local ZoneConfig = require(Shared.Config.ZoneConfig)
 local Net = require(Shared.Modules.Net)
 
@@ -31,20 +32,32 @@ local function defaultProfile()
 	return {
 		Cash = GameConfig.StartingCash,
 		Gems = GameConfig.StartingGems,
+		LifetimeCash = 0,           -- Cash EARNED since last rebirth; resets on rebirth; drives milestone
 		Rebirths = 0,
+		GemMultiplier = 1,          -- derived from Rebirths: 1.5^Rebirths
+		CashMultiplier = 1,         -- derived from Rebirths: 1.2^Rebirths
+		LevelCostMultiplier = 1,    -- derived from Rebirths: 1.5^Rebirths
 		LuckLevel = 0,
-		HatchSpeedLevel = 0,
+		IncubatorLevel = 0,         -- was HatchSpeedLevel
+		ShovelLevel = 0,
 		CurrentZone = 1,
 		Plots = GameConfig.StartingPlots,
 		Eggs = { Common = 0, Uncommon = 0, Rare = 0, Legendary = 0 },
 		Incubator = nil, -- { rarity, endTime, duration } | nil
-		Collection = {},  -- array of { id, base, tier, variant }
+		Collection = {},  -- array of { id, base, tier, variant, level }
 		Version = 1,
 	}
 end
 
 -- Make sure older saves get any new fields.
 local function reconcile(profile: any)
+	-- Migrate the renamed HatchSpeedLevel -> IncubatorLevel BEFORE defaulting,
+	-- so an old save's value isn't lost to the IncubatorLevel=0 default.
+	if profile.IncubatorLevel == nil and profile.HatchSpeedLevel ~= nil then
+		profile.IncubatorLevel = profile.HatchSpeedLevel
+	end
+	profile.HatchSpeedLevel = nil
+
 	local def = defaultProfile()
 	for k, v in pairs(def) do
 		if profile[k] == nil then
@@ -60,6 +73,15 @@ local function reconcile(profile: any)
 	if typeof(profile.Collection) ~= "table" then
 		profile.Collection = {}
 	end
+	-- Every brainrot carries a level (1..10); old entries default to 1.
+	for _, entry in ipairs(profile.Collection) do
+		entry.level = entry.level or 1
+	end
+	-- The income/level-cost multipliers are derived from Rebirths. Reconcile any
+	-- missing/stale derived value straight from the rebirth count.
+	profile.GemMultiplier = UpgradeConfig.gemMultiplier(profile.Rebirths)
+	profile.CashMultiplier = UpgradeConfig.cashMultiplier(profile.Rebirths)
+	profile.LevelCostMultiplier = UpgradeConfig.levelCostMultiplier(profile.Rebirths)
 	return profile
 end
 
@@ -176,10 +198,7 @@ function PlayerData.snapshot(player: Player): any?
 		return nil
 	end
 
-	local plotsBeyondStart = math.max(0, p.Plots - GameConfig.StartingPlots)
-	local nextPlotCost = math.floor(
-		GameConfig.PlotBaseCost * (GameConfig.PlotCostGrowth ^ plotsBeyondStart)
-	)
+	local nextPlotCost = GameConfig.plotCost(p.Plots)
 
 	-- TOTAL eggs held across all rarities + the rebirth-scaled capacity (for the
 	-- backpack UI cap line).
@@ -191,9 +210,15 @@ function PlayerData.snapshot(player: Player): any?
 	return {
 		Cash = p.Cash,
 		Gems = p.Gems,
+		LifetimeCash = p.LifetimeCash,
 		Rebirths = p.Rebirths,
+		GemMultiplier = p.GemMultiplier,
+		CashMultiplier = p.CashMultiplier,
+		LevelCostMultiplier = p.LevelCostMultiplier,
 		LuckLevel = p.LuckLevel,
-		HatchSpeedLevel = p.HatchSpeedLevel,
+		IncubatorLevel = p.IncubatorLevel,
+		ShovelLevel = p.ShovelLevel,
+		DigSpeedMult = ShovelConfig.digSpeedMult(p.ShovelLevel),
 		CurrentZone = p.CurrentZone,
 		HighestZone = ZoneConfig.highestUnlocked(p.Rebirths),
 		MaxZone = ZoneConfig.MaxZone,
@@ -203,15 +228,16 @@ function PlayerData.snapshot(player: Player): any?
 		EggCount = eggCount,
 		EggCapacity = GameConfig.eggCapacity(p.Rebirths),
 		Incubator = p.Incubator,
-		Collection = p.Collection,
+		Collection = p.Collection,  -- each entry carries .level
 		-- derived
 		TotalLuck = UpgradeConfig.totalLuck(p.LuckLevel, p.Rebirths),
-		HatchReduction = UpgradeConfig.hatchReduction(p.HatchSpeedLevel),
+		IncubatorReduction = UpgradeConfig.incubatorReduction(p.IncubatorLevel),
 		NextPlotCost = nextPlotCost,
-		RebirthGemCost = UpgradeConfig.rebirthGemCost(p.Rebirths),
-		RebirthMilestone = UpgradeConfig.Rebirth.CashMilestone,
-		RebirthReady = p.Cash >= UpgradeConfig.Rebirth.CashMilestone
-			and ZoneConfig.highestUnlocked(p.Rebirths + 1) > ZoneConfig.highestUnlocked(p.Rebirths),
+		RebirthGemCost = UpgradeConfig.gemCost(p.Rebirths),
+		RebirthMilestone = UpgradeConfig.cashMilestone(p.Rebirths),
+		RebirthReady = p.LifetimeCash >= UpgradeConfig.cashMilestone(p.Rebirths)
+			and p.Gems >= UpgradeConfig.gemCost(p.Rebirths)
+			and p.CurrentZone == ZoneConfig.highestUnlocked(p.Rebirths),
 	}
 end
 

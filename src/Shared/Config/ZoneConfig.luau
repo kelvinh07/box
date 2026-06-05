@@ -3,10 +3,16 @@
 -- Each zone defines its own:
 --   DigOdds       - weighted egg rarity table while digging in this zone
 --   BrainrotTiers - which brainrot tiers are available to hatch in this zone
---   CashScale     - multiplier applied to all Cash income earned in this zone
---   GemScale      - multiplier applied to all Gem income earned in this zone
+--   CashScale     - LEGACY: no longer used by income (see note below)
+--   GemScale      - LEGACY: no longer used by income (see note below)
 --   UnlockRebirths- how many rebirths are required to access this zone
 --   DisplayName / GroundColor for the map.
+--
+-- NOTE: income is no longer scaled by zone. CashScale/GemScale are KEPT for
+-- reference but are UNUSED by income — the per-zone economy boost has been
+-- REPLACED by the permanent, compounding rebirth multipliers (cash 1.2^rb,
+-- gems 1.5^rb) applied in BrainrotMath. The fields remain so existing data /
+-- tooling that reads them keeps working.
 --
 -- To add a new zone: append an entry. Everything else (digging, economy,
 -- rebirth unlock chain, map building) reads from here automatically.

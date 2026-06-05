@@ -20,7 +20,7 @@ local Effects = require(UI.Effects)
 local TopBar = require(UI.TopBar)
 local HUD = require(UI.HUD)
 local Backpack = require(UI.Backpack)
-local Shop = require(UI.Shop)
+local Stands = require(UI.Stands)
 local Collection = require(UI.Collection)
 local Rebirth = require(UI.Rebirth)
 local SideNav = require(UI.SideNav)
@@ -46,15 +46,16 @@ HUD.build(screen)
 Backpack.build(screen)
 
 -- modal panels
-local shop = Shop.build(screen)
 local collection = Collection.build(screen)
 local rebirth = Rebirth.build(screen)
 
+-- the three stand upgrade panels (opened by walking up to a stand, not the SideNav)
+Stands.start(screen)
+
 -- right-side navigation toggles the modals
 SideNav.build(screen, {
-	{ id = "Shop",       text = "🛒",  color = UIUtil.Colors.Accent, onClick = shop.toggle },
-	{ id = "Collection", text = "📦",  color = UIUtil.Colors.Gem,    onClick = collection.toggle },
-	{ id = "Rebirth",    text = "🔁",  color = UIUtil.Colors.Warn,   onClick = rebirth.toggle },
+	{ id = "Collection", text = "📦",  color = UIUtil.Colors.Gem,  onClick = collection.toggle },
+	{ id = "Rebirth",    text = "🔁",  color = UIUtil.Colors.Warn, onClick = rebirth.toggle },
 })
 
 -- per-client dig mounds over the shared field + your own zone areas

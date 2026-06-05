@@ -3,13 +3,14 @@
 -- Handles placing an egg into the incubator and collecting the hatched brainrot.
 --
 --   PlaceEgg:         spends the egg from inventory, charges the Cash hatch cost,
---                     starts a timer (incubation * (1 - HatchReduction), capped).
+--                     starts a timer of max(0.5, incubation * (1 - reduction)).
 --   CollectIncubator: once the timer is up, rolls a base brainrot (from the egg
 --                     tier, available in the current zone) + a variant (luck-
---                     weighted), and adds it to the collection on a free plot.
+--                     weighted), and adds it to the collection (at level 1) on a
+--                     free plot.
 --
--- The HatchSpeed reduction is HARD CAPPED at 50% inside UpgradeConfig — eggs can
--- never hatch faster than half their base time.
+-- The incubator reduction comes from UpgradeConfig.incubatorReduction; the 0.5s
+-- hatch floor below guarantees hatching is NEVER instant, no matter the tier.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
@@ -129,8 +130,9 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 	profile.Eggs[rarity] -= 1
 	profile.Cash -= egg.HatchCost
 
-	local reduction = UpgradeConfig.hatchReduction(profile.HatchSpeedLevel)
-	local duration = egg.Incubation * (1 - reduction)
+	-- 0.5s hatch floor: hatching is never instant, even at the top incubator tier.
+	local reduction = UpgradeConfig.incubatorReduction(profile.IncubatorLevel)
+	local duration = math.max(0.5, egg.Incubation * (1 - reduction))
 
 	profile.Incubator = {
 		rarity = rarity,
@@ -179,6 +181,7 @@ function IncubationManager.collect(player: Player): any
 		base = baseName,
 		tier = baseData.Tier,
 		variant = variant,
+		level = 1, -- brainrots start at level 1; levels persist through rebirth
 	}
 	table.insert(profile.Collection, entry)
 	profile.Incubator = nil

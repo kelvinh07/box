@@ -1,8 +1,8 @@
 --!strict
 -- SideNav
 -- Right-side vertical stack of chunky buttons that toggle the modal panels
--- (Shop, Collection, Rebirth). A small badge pulses on the Rebirth button when
--- a rebirth is available.
+-- (Collection, Rebirth). A small badge pulses on the Rebirth button when
+-- a rebirth is available. (The upgrade stands open via proximity, not here.)
 
 local UIUtil = require(script.Parent.Parent.UIUtil)
 local ClientState = require(script.Parent.Parent.ClientState)

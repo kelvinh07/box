@@ -2,18 +2,23 @@
 -- EconomyManager
 -- Owns all Cash/Gem mutation:
 --   * the passive income loop (applies tier base income + variant multipliers +
---     zone scaling for every owned brainrot, every income tick),
+--     the per-brainrot level + the permanent rebirth multipliers for every owned
+--     brainrot, every income tick),
 --   * buying extra plots (Cash),
---   * selling owned brainrots (refund Cash).
+--   * selling owned brainrots (refund Cash),
+--   * leveling up a single owned brainrot (Cash L2-5 / Gems L6-10).
 --
 -- All amounts are computed by BrainrotMath so the server payout matches the
--- number the client previews.
+-- number the client previews. Income is keyed off profile.Rebirths (the rebirth
+-- multipliers replaced the old per-zone scaling).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 
 local GameConfig = require(Shared.Config.GameConfig)
+local BrainrotConfig = require(Shared.Config.BrainrotConfig)
+local UpgradeConfig = require(Shared.Config.UpgradeConfig)
 local BrainrotMath = require(Shared.Modules.BrainrotMath)
 local Net = require(Shared.Modules.Net)
 
@@ -54,6 +59,9 @@ function EconomyManager.collect(player: Player, id: string): number
 	end
 	bag[id] = 0
 	p.Cash += amount
+	-- LifetimeCash tracks Cash EARNED via income (drives the rebirth milestone);
+	-- credit it here but NOT on sell refunds.
+	p.LifetimeCash += amount
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
 	Net.getEvent("FloatingText"):FireClient(player, { cash = amount, gems = 0 })
@@ -88,7 +96,7 @@ function EconomyManager.startIncomeLoop()
 					local bag = accrued[player]
 					local gems = 0
 					for _, entry in ipairs(profile.Collection) do
-						local c, g = BrainrotMath.income(entry, profile.CurrentZone)
+						local c, g = BrainrotMath.income(entry, profile.Rebirths)
 						local cap = math.max(50, c * ACCRUE_CAP_CYCLES)
 						bag[entry.id] = math.min(cap, (bag[entry.id] or 0) + c)
 						gems += g
@@ -119,8 +127,7 @@ function EconomyManager.buyPlot(player: Player): any
 	if p.Plots >= GameConfig.MaxPlots then
 		return { ok = false, reason = "Max plots reached." }
 	end
-	local plotsBeyondStart = math.max(0, p.Plots - GameConfig.StartingPlots)
-	local cost = math.floor(GameConfig.PlotBaseCost * (GameConfig.PlotCostGrowth ^ plotsBeyondStart))
+	local cost = GameConfig.plotCost(p.Plots)
 	if p.Cash < cost then
 		return { ok = false, reason = "Not enough Cash." }
 	end
@@ -150,8 +157,9 @@ function EconomyManager.sellBrainrot(player: Player, id: string): any
 	if not entry then
 		return { ok = false, reason = "Brainrot not found." }
 	end
-	-- refund = ~30 cycles of its cash income (a meaningful but not free amount)
-	local cash = select(1, BrainrotMath.income(entry, p.CurrentZone))
+	-- refund = ~30 cycles of its cash income (a meaningful but not free amount).
+	-- NOTE: a sell refund is NOT income, so we do NOT add it to LifetimeCash.
+	local cash = select(1, BrainrotMath.income(entry, p.Rebirths))
 	local refund = math.max(5, math.floor(cash * 30))
 
 	table.remove(p.Collection, index)
@@ -168,12 +176,71 @@ function EconomyManager.sellBrainrot(player: Player, id: string): any
 	return { ok = true, refund = refund }
 end
 
+----------------------------------------------------------------- level brainrot
+-- Level up a single owned brainrot by one. Levels 2-5 cost Cash, 6-10 cost Gems;
+-- the base cost is scaled by the rebirth levelCostMultiplier (1.5^Rebirths).
+-- Levels persist through rebirth and are capped at BrainrotConfig.MaxLevel.
+function EconomyManager.levelBrainrot(player: Player, id: string): any
+	local p = PlayerData.get(player)
+	if not p then
+		return { ok = false, reason = "No profile." }
+	end
+
+	local entry
+	for _, e in ipairs(p.Collection) do
+		if e.id == id then
+			entry = e
+			break
+		end
+	end
+	if not entry then
+		return { ok = false, reason = "Brainrot not found." }
+	end
+
+	local current = entry.level or 1
+	if current >= BrainrotConfig.MaxLevel then
+		return { ok = false, reason = "Already max level." }
+	end
+
+	local target = current + 1
+	local baseCost, currency = BrainrotConfig.levelUpCost(target)
+	local cost = math.floor(baseCost * UpgradeConfig.levelCostMultiplier(p.Rebirths))
+
+	if currency == "Gems" then
+		if p.Gems < cost then
+			return { ok = false, reason = "Not enough Gems." }
+		end
+		p.Gems -= cost
+	else
+		if p.Cash < cost then
+			return { ok = false, reason = "Not enough Cash." }
+		end
+		p.Cash -= cost
+	end
+
+	entry.level = target
+
+	-- refresh the brainrot's plot label ("Lv N" / income) now that it leveled.
+	-- BaseManager.refreshBrainrotLabel is wired in step 4; guard so this manager
+	-- works whether or not that method exists yet.
+	if BaseManager and type(BaseManager.refreshBrainrotLabel) == "function" then
+		BaseManager.refreshBrainrotLabel(player, entry)
+	end
+
+	PlayerData.markDirty(player)
+	PlayerData.push(player)
+	return { ok = true, level = target, cost = cost, currency = currency }
+end
+
 function EconomyManager.init()
 	Net.getFunction("BuyPlot").OnServerInvoke = function(player)
 		return EconomyManager.buyPlot(player)
 	end
 	Net.getFunction("SellBrainrot").OnServerInvoke = function(player, id)
 		return EconomyManager.sellBrainrot(player, id)
+	end
+	Net.getFunction("LevelBrainrot").OnServerInvoke = function(player, id)
+		return EconomyManager.levelBrainrot(player, id)
 	end
 end
 

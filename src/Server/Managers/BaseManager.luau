@@ -84,6 +84,9 @@ local slotSign: { [number]: TextLabel } = {}                       -- the name T
 local slotPodiumCount: { [number]: number } = {}                   -- current podium count for the slot
 local slotIncubator: { [number]: BasePart } = {}                   -- the incubator base part per slot (for proximity checks)
 local slotStairBarrier: { [number]: { part: BasePart, label: TextLabel } } = {}  -- floor-2 staircase gate per slot
+-- a GHOST "next plot" podium with a clickable Buy button, shown at the next free
+-- podium slot for an OCCUPIED base under MaxPlots (nil otherwise). { podium,label,cost }
+local slotGhostPlot: { [number]: any } = {}
 
 -- forward declaration (defined below, called from buildBaseStructure)
 local updateStaircase: (slot: number) -> ()
@@ -140,6 +143,13 @@ local function baseOrigin(slot: number): CFrame
 	local radial = Vector3.new(math.sin(ang), 0, -math.cos(ang))
 	local pos = Vector3.new(c.X, baseY, c.Z) + radial * LOBBY_RADIUS
 	return CFrame.lookAt(pos, Vector3.new(c.X, baseY, c.Z)) -- face the dig center (inward)
+end
+
+-- Cost to buy the NEXT plot given the slot's current plot count. Delegates to the
+-- single GameConfig.plotCost helper (also used by EconomyManager.buyPlot / snapshot)
+-- so the ghost's displayed cost matches exactly what the player is charged.
+local function plotCostFor(plots: number): number
+	return GameConfig.plotCost(plots)
 end
 
 ----------------------------------------------------------------- podiums + plates
@@ -237,6 +247,81 @@ local function buildPlate(slot: number, idx: number, cf: CFrame, parent: Instanc
 	end)
 end
 
+-- per-INDEX podium placement math (shared by real podiums AND the ghost next-slot
+-- podium so they line up exactly). Brainrots line the side (window) walls: 6 per
+-- side per floor. Plots 1-12 are floor 1, plots 13-24 are floor 2; within a floor
+-- the first 6 hug the left (-X) window wall and the next 6 hug the right (+X) wall.
+-- Returns (side, lx, lz, baseLY) for podium index `i`.
+local function podiumLocalAt(i: number): (number, number, number, number)
+	local floor = (i <= 12) and 1 or 2
+	local j = (i - 1) % 12             -- 0..11 within the floor
+	local side = (j < 6) and -1 or 1   -- first 6 = left wall, next 6 = right wall
+	local row = j % 6                  -- 0..5 along the depth
+	local lx = side * (FLOOR.X / 2 - 6)             -- podium near the side/window wall (~+/-26)
+	local lz = -32 + row * 13                       -- 6 podiums spread along the depth
+	local baseLY = (floor == 1) and 1 or FLOOR2_Y   -- floor surface
+	return side, lx, lz, baseLY
+end
+
+-- a GHOST "next plot" podium with a clickable Buy button at the next free index
+-- (count+1). Distinct reddish/grey, semi-transparent, non-colliding. Clicking it
+-- routes to EconomyManager.buyPlot for the slot occupant (server-validated).
+local function buildGhostPlot(slot: number, count: number)
+	local folder = slotFolder[slot]
+	if not folder then
+		return
+	end
+	local origin = baseOrigin(slot)
+	local _, lx, lz, baseLY = podiumLocalAt(count + 1)
+	local cost = plotCostFor(count)
+
+	local ghost = buildPodium(origin * CFrame.new(lx, baseLY + BrainrotFactory.PODIUM_SIZE.Y / 2, lz), folder)
+	ghost.Name = "GhostPodium"
+	ghost.Color = Color3.fromRGB(150, 90, 90)   -- reddish/grey, distinct from real neon podiums
+	ghost.Material = Enum.Material.SmoothPlastic
+	ghost.Transparency = 0.5
+	ghost.CanCollide = false
+	local rim = ghost:FindFirstChild("Rim")
+	if rim and rim:IsA("BasePart") then
+		rim.Color = Color3.fromRGB(120, 90, 90)
+		rim.Transparency = 0.5
+	end
+
+	local bb = Instance.new("BillboardGui")
+	bb.Size = UDim2.new(0, 150, 0, 52)
+	bb.StudsOffset = Vector3.new(0, 3, 0)
+	bb.AlwaysOnTop = true
+	bb.MaxDistance = 90
+	bb.Parent = ghost
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.FredokaOne
+	lbl.TextScaled = true
+	lbl.Text = ("🔒 Buy Plot\n$%s"):format(Format.short(cost))
+	lbl.TextColor3 = Color3.fromRGB(255, 230, 150)
+	lbl.TextStrokeTransparency = 0
+	lbl.Parent = bb
+
+	local click = Instance.new("ClickDetector")
+	click.MaxActivationDistance = 32
+	click.Parent = ghost
+
+	click.MouseClick:Connect(function(clicker: Player)
+		if clicker ~= slotOccupant[slot] then
+			return
+		end
+		local res = EconomyManager.buyPlot(clicker)
+		if res and res.ok == false and res.reason then
+			Net.getEvent("Notify"):FireClient(clicker, {
+				title = "Plot Locked", text = res.reason, color = "Legendary",
+			})
+		end
+	end)
+
+	slotGhostPlot[slot] = { podium = ghost, label = lbl, cost = cost }
+end
+
 -- (re)build the podium grid + plates for a given slot's plot count
 local function rebuildSlotPodiums(slot: number, count: number)
 	local folder = slotFolder[slot]
@@ -259,19 +344,10 @@ local function rebuildSlotPodiums(slot: number, count: number)
 	end
 	slotPlates[slot] = {}
 
-	-- Brainrots line the side (window) walls: 6 per side per floor. Plots 1-12 are
-	-- floor 1, plots 13-24 are floor 2; within a floor the first 6 hug the left
-	-- (-X) window wall and the next 6 hug the right (+X) window wall.
 	count = math.clamp(count, 0, GameConfig.MaxPlots)
 	local origin = baseOrigin(slot)
 	for i = 1, count do
-		local floor = (i <= 12) and 1 or 2
-		local j = (i - 1) % 12             -- 0..11 within the floor
-		local side = (j < 6) and -1 or 1   -- first 6 = left wall, next 6 = right wall
-		local row = j % 6                  -- 0..5 along the depth
-		local lx = side * (FLOOR.X / 2 - 6)             -- podium near the side/window wall (~+/-26)
-		local lz = -32 + row * 13                       -- 6 podiums spread along the depth
-		local baseLY = (floor == 1) and 1 or FLOOR2_Y   -- floor surface
+		local side, lx, lz, baseLY = podiumLocalAt(i)
 
 		local podium = buildPodium(
 			origin * CFrame.new(lx, baseLY + BrainrotFactory.PODIUM_SIZE.Y / 2, lz),
@@ -282,6 +358,19 @@ local function rebuildSlotPodiums(slot: number, count: number)
 		buildPlate(slot, i, origin * CFrame.new(lx - side * 6, baseLY + PLATE.Y / 2, lz), folder)
 	end
 	slotPodiumCount[slot] = count
+
+	-- rebuild the GHOST next-slot Buy podium: destroy any prior one FIRST, then show
+	-- it only for an OCCUPIED base that is still under MaxPlots, at index count+1.
+	local prev = slotGhostPlot[slot]
+	if prev then
+		if prev.podium then
+			prev.podium:Destroy()
+		end
+		slotGhostPlot[slot] = nil
+	end
+	if slotOccupant[slot] ~= nil and count < GameConfig.MaxPlots then
+		buildGhostPlot(slot, count)
+	end
 end
 
 -- place a single brainrot model onto the next free podium for `slot`
@@ -745,7 +834,7 @@ end
 local function buildSharedLane()
 	local x = MapBuilder.DigCenter.X
 	local mouthZ = LOBBY_RADIUS * (-math.cos(math.rad(ARC_SPAN_DEG / 2)))  -- +Z edge of the opening (end plots)
-	local LANE_GAP = 80          -- gap from the half-circle opening to dig site 1
+	local LANE_GAP = 30          -- gap from the half-circle opening to dig site 1 (closer to the bases)
 	local STEP = SEG_SIZE.Z + 28 -- center-to-center between consecutive dig sites
 	-- dig sites march OUTWARD (+Z), site 1 closest to the opening:
 	for z = 1, ZoneConfig.MaxZone do
@@ -822,12 +911,12 @@ function BaseManager.assignBase(player: Player)
 		sign.TextColor3 = Color3.fromRGB(255, 220, 120)
 	end
 
-	-- rebuild podiums to the player's plot count only if it differs from current
+	-- rebuild podiums to the player's plot count. Always rebuild on assign (even when
+	-- the count is unchanged) so the GHOST next-slot Buy podium — only built for an
+	-- occupied slot — appears now that this slot has an occupant.
 	local profile = PlayerData.get(player)
 	local plots = profile and profile.Plots or GameConfig.StartingPlots
-	if slotPodiumCount[slot] ~= plots then
-		rebuildSlotPodiums(slot, plots)
-	end
+	rebuildSlotPodiums(slot, plots)
 
 	-- load the player's brainrots onto the podiums
 	if profile then
@@ -869,6 +958,15 @@ function BaseManager.freeBase(player: Player)
 		model:Destroy()
 	end
 	slotModels[slot] = {}
+
+	-- an empty plot shows no Buy button: destroy + clear the ghost next-slot podium
+	local ghost = slotGhostPlot[slot]
+	if ghost then
+		if ghost.podium then
+			ghost.podium:Destroy()
+		end
+		slotGhostPlot[slot] = nil
+	end
 
 	-- reset the name sign back to the neutral OPEN PLOT state
 	local sign = slotSign[slot]
@@ -920,6 +1018,16 @@ function BaseManager.startGateUpdater()
 							rec.label.Text = ""
 						end
 					end
+				end
+
+				-- tint the ghost Buy label by affordability (green = can afford, soft-red = not)
+				local ghost = slotGhostPlot[slot]
+				if ghost and ghost.label and occupant then
+					local profile = PlayerData.get(occupant)
+					local cash = (profile and profile.Cash) or 0
+					ghost.label.TextColor3 = (cash >= ghost.cost)
+						and Color3.fromRGB(150, 255, 150)
+						or Color3.fromRGB(255, 170, 150)
 				end
 			end
 			task.wait(0.5)

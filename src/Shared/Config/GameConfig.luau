@@ -12,8 +12,10 @@ GameConfig.IncomeTickSeconds = 1
 -- How often we auto-save player data.
 GameConfig.AutoSaveSeconds = 60
 
--- Dig cooldown (seconds) between successful digs. Kept below the shortest
--- hold-to-dig time (Common = ~0.96s) so a fully-held dig always succeeds.
+-- Dig cooldown (seconds) between successful digs. SUPERSEDED: the server now gates
+-- digs with a RARITY-AWARE cooldown derived from ShovelConfig.holdDuration (so rarer
+-- eggs take longer on the server too). Kept only as a reference/fallback flat value;
+-- it is no longer the active rate limit in DiggingManager.
 GameConfig.DigCooldown = 0.8
 
 -- How fast players walk (applied to the Humanoid on spawn).
@@ -24,11 +26,27 @@ GameConfig.StartingCash = 50
 GameConfig.StartingGems = 0
 GameConfig.StartingPlots = 3
 
--- Plot purchasing: cost scales with how many plots you already own.
+-- Plot purchasing: Cash cost scales with how many plots you already own.
 -- Plots 1-12 are floor 1, plots 13-24 are floor 2 of the base building.
+-- The Nth purchased slot BEYOND StartingPlots(=3) follows the table below; past
+-- the 6th extra slot the cost DOUBLES every slot. See GameConfig.plotCost.
 GameConfig.MaxPlots = 24
-GameConfig.PlotBaseCost = 250         -- cost of the 4th plot
-GameConfig.PlotCostGrowth = 1.8       -- multiplier per additional plot
+GameConfig.PlotCostTable = { 100, 300, 800, 2000, 5000, 12000 } -- Nth extra slot, 1..6
+
+-- Cash cost of the NEXT plot given how many plots the player already owns.
+-- With n = currentPlots - StartingPlots + 1 (the index of the slot being bought):
+--   n <= 6 -> PlotCostTable[n]
+--   n  > 6 -> 12000 * 2^(n-6)   (7th 24000, 8th 48000, ...)
+function GameConfig.plotCost(currentPlots: number): number
+	local n = currentPlots - GameConfig.StartingPlots + 1
+	if n < 1 then
+		n = 1
+	end
+	if n <= 6 then
+		return GameConfig.PlotCostTable[n]
+	end
+	return 12000 * 2 ^ (n - 6)
+end
 
 -- Egg inventory cap per rarity (prevents griefing / runaway saves).
 GameConfig.MaxEggsPerRarity = 99

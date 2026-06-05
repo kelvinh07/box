@@ -2,13 +2,17 @@
 -- BrainrotConfig
 -- The base roster of Italian Brainrot memes. Each entry defines:
 --   Tier       - which egg tier hatches it
---   BaseCash   - Cash generated per income cycle (BEFORE variant + zone scaling)
---   BaseGem    - Gems generated per income cycle (BEFORE variant + zone scaling)
+--   BaseCash   - LEGACY: no longer used by income (kept for reference only)
+--   BaseGem    - LEGACY: no longer used by income (kept for reference only)
 --   Color      - chunky placeholder color (also used as a glow accent)
 --   Scale      - relative model size on the podium
 --
+-- INCOME is now TIER-BASED (see BrainrotConfig.TierIncome) and scaled by the
+-- variant, the per-brainrot level, and the rebirth multipliers — see BrainrotMath.
+-- The per-brainrot BaseCash/BaseGem fields below are UNUSED by income; they are
+-- left in place so older tooling/asset wiring keeps working.
+--
 -- Variants (Normal/Gold/Diamond/Galaxy) multiply these stats — see VariantConfig.
--- Zones scale these stats — see ZoneConfig.
 --
 -- The same base roster is reused across all variants so the roster stays small.
 
@@ -22,6 +26,34 @@ export type Brainrot = {
 }
 
 local BrainrotConfig = {}
+
+-- Per-tier income, expressed PER MINUTE (BrainrotMath divides by 60 for the 1s loop).
+-- This is the single tier-based income table; variant multiplier, per-brainrot level
+-- multiplier (1.2^(level-1)) and the rebirth multipliers are layered on in BrainrotMath.
+BrainrotConfig.TierIncome = {
+	Common    = { CashPerMin = 10,   GemPerMin = 0 },
+	Uncommon  = { CashPerMin = 35,   GemPerMin = 0 },
+	Rare      = { CashPerMin = 120,  GemPerMin = 1 },
+	Legendary = { CashPerMin = 500,  GemPerMin = 5 },
+	Mythic    = { CashPerMin = 2000, GemPerMin = 15 },
+}
+
+-- Per-brainrot leveling. Cap is 10; entry.level lives in 1..10 (default 1).
+-- Costs are the BASE cost of reaching the target level, BEFORE the rebirth
+-- levelCostMultiplier (1.5^rebirthCount) is applied. Currency: levels 2-5 = Cash,
+-- levels 6-10 = Gems.
+BrainrotConfig.MaxLevel = 10
+BrainrotConfig.Levels = {
+	[2]  = { Cost = 200,   Currency = "Cash" },
+	[3]  = { Cost = 600,   Currency = "Cash" },
+	[4]  = { Cost = 1500,  Currency = "Cash" },
+	[5]  = { Cost = 3500,  Currency = "Cash" },
+	[6]  = { Cost = 500,   Currency = "Gems" },
+	[7]  = { Cost = 1200,  Currency = "Gems" },
+	[8]  = { Cost = 3000,  Currency = "Gems" },
+	[9]  = { Cost = 7500,  Currency = "Gems" },
+	[10] = { Cost = 18000, Currency = "Gems" },
+}
 
 BrainrotConfig.Brainrots = {
 	---------------------------------------------------------------- COMMON
@@ -70,6 +102,29 @@ end
 
 function BrainrotConfig.get(name: string)
 	return BrainrotConfig.Brainrots[name]
+end
+
+-- Per-brainrot level multiplier (applies to BOTH cash and gems).
+-- Level 1 = 1x; Level 10 = 1.2^9 = 5.16x.
+function BrainrotConfig.levelMult(level: number): number
+	return 1.2 ^ ((level or 1) - 1)
+end
+
+-- BASE cost (and currency) to reach `targetLevel`, BEFORE rebirth scaling.
+-- Returns (0, "Cash") for out-of-range levels (e.g. <=1 or >MaxLevel).
+function BrainrotConfig.levelUpCost(targetLevel: number): (number, string)
+	local entry = BrainrotConfig.Levels[targetLevel]
+	if not entry then
+		return 0, "Cash"
+	end
+	return entry.Cost, entry.Currency
+end
+
+-- Per-MINUTE base income for a tier (cash, gem), before variant/level/rebirth.
+-- Unknown tiers fall back to Common.
+function BrainrotConfig.tierIncomePerMin(tier: string): (number, number)
+	local income = BrainrotConfig.TierIncome[tier] or BrainrotConfig.TierIncome.Common
+	return income.CashPerMin, income.GemPerMin
 end
 
 return BrainrotConfig
