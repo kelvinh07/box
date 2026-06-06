@@ -11,6 +11,10 @@ at runtime, so the game is fully playable on first run with **zero asset IDs**.
 Drop Creator Store asset IDs into `AssetConfig.luau` later to replace the chunky
 placeholder models.
 
+The whole world wears a **vibrant, semi-pixelated legoish look**: saturated
+colors from `Palette.luau`, studded plastic parts, studded dirt dig mounds, and
+pixel/voxel eggs.
+
 ---
 
 ## 📁 File structure
@@ -30,7 +34,8 @@ HatchABrainrot/
     │   │   ├── ZoneConfig.luau        per-zone egg odds + pools (CashScale/GemScale unused by income)
     │   │   ├── UpgradeConfig.luau     Luck (9 tiers) / Incubator (9 tiers) + Rebirth rules + multipliers
     │   │   ├── ShovelConfig.luau      dig-speed shovel: 9 tiers + dig hold/cooldown (0.3s floor)
-    │   │   └── AssetConfig.luau       Creator Store asset IDs (placeholders here)
+    │   │   ├── AssetConfig.luau       Creator Store asset IDs (all nil → procedural)
+    │   │   └── Palette.luau           VIBRANT legoish world-color source of truth
     │   └── Modules/
     │       ├── Net.luau               RemoteEvent/Function registry
     │       ├── Format.luau            number/time formatting (1.5K, mm:ss)
@@ -41,15 +46,16 @@ HatchABrainrot/
     │   ├── Bootstrap.server.luau      entry point: wires everything, lifecycle
     │   └── Managers/
     │       ├── PlayerData.luau        DataStore load/save + reconcile + snapshots
-    │       ├── MapBuilder.luau        builds the world + spawn
-    │       ├── BaseManager.luau       bases, podiums, plates, ghost Buy-Plot, model placement
+    │       ├── MapBuilder.luau        builds the world + spawn + snow-capped dirt map border
+    │       ├── BaseManager.luau       bases, podiums, plates, ghost Buy-Plot, dig lane + zone gates + fences, model placement
     │       ├── BrainrotFactory.luau   Creator Store insert OR procedural fallback
-    │       ├── DiggingManager.luau    luck-weighted egg rolls + dig proximity
-    │       ├── IncubationManager.luau hatch timers + base/variant rolling
+    │       ├── DiggingManager.luau    luck-weighted egg rolls + dig proximity + rarity cooldown
+    │       ├── IncubationManager.luau hatch timers + base/variant rolling + egg discard
     │       ├── EconomyManager.luau    passive income, plots, selling, brainrot leveling
     │       ├── UpgradeManager.luau    Shovel + Incubator + Luck purchases (per-tier Cash/Gems)
     │       ├── StandManager.luau      builds 3 in-world upgrade stands + bacon NPCs
-    │       └── RebirthManager.luau    3-requirement check + reset Cash only + permanent multipliers
+    │       ├── RebirthManager.luau    3-requirement check + reset Cash only + permanent multipliers
+    │       └── LeaderboardManager.luau in-world boards: most rebirths + rarest brainrot
     │
     └── Client/                    → StarterPlayer.StarterPlayerScripts.Client
         ├── Main.client.luau           builds the whole UI, starts state sync
@@ -62,7 +68,7 @@ HatchABrainrot/
             ├── Effects.luau           toasts, +$/+Gem popups, hatch reveal, shake
             ├── TopBar.luau            Cash/Gem counters + zone label
             ├── HUD.luau               incubator panel: progress bar, countdown, COLLECT
-            ├── Backpack.luau          🎒 eggs-per-rarity tray, click to hatch
+            ├── Backpack.luau          🎒 eggs-per-rarity tray: click to hatch, 🗑️ to discard
             ├── Stands.luau            3 in-world stand panels (Shovel/Incubator/Luck)
             ├── LevelUp.luau           per-brainrot level-up panel (click your podium)
             ├── Collection.luau        owned brainrots by tier + variant + Lv badge
@@ -88,9 +94,11 @@ HatchABrainrot/
 
 ### Option B — Build a place file
 ```
-rojo build -o HatchABrainrot.rbxlx
+rojo build -o HatchABrainrot-LATEST.rbxlx
 ```
-Open `HatchABrainrot.rbxlx` in Studio and press **Play**.
+Open `HatchABrainrot-LATEST.rbxlx` in Studio and press **Play**. (Note: Rojo live-sync
+does not re-run already-running scripts, so after editing do a full **Stop → Play**, or
+rebuild this place file, to avoid testing stale code.)
 
 ### ⚙️ Enable saving
 For DataStore persistence: **Game Settings → Security → Enable Studio Access to
@@ -106,8 +114,9 @@ overwritten).
    a mound to dig — an egg pops out of the dirt. Its rarity is decided up front,
    so rarer eggs look bigger and take longer to dig. Eggs go into your **🎒
    backpack** (starts at 5, +5 per rebirth, max 50).
-2. Click an egg in your **🎒 backpack** (left) to start hatching it at your base's
-   front **🥚 Incubator**. Watch the live progress bar in the HUD.
+2. Open your **🎒 backpack** (left). Click an egg to start hatching it at your base's
+   front **🥚 Incubator** (watch the live progress bar in the HUD), or hit the **🗑️**
+   on a slot to throw away an egg you don't want (no refund).
 3. Press **COLLECT** when it's ready — a brainrot + variant is revealed and
    placed on a glowing podium at your base. It accrues Cash (walk over its green
    **pressure plate** to bank it); Gems auto-credit. Income depends on its tier,
@@ -130,6 +139,10 @@ overwritten).
    multiplies your income** — Gems ×1.5 and Cash ×1.2 per rebirth, compounding.
    Rebirthing also unlocks the next **Zone** (rarer eggs, exclusive Mythic
    brainrots) until you reach the last one, then keeps going for more multipliers.
+   (Each zone is gated by a physical wall you can only walk through once you've
+   unlocked it.)
+8. Check the **in-world leaderboard boards** on the dig-lane fences — 🏆 most
+   rebirths and 💎 rarest brainrot — to see how you stack up.
 
 ---
 

@@ -26,16 +26,19 @@ Net.Functions = {
 	"RequestState",       -- ask server to push current state
 	"RollEggs",           -- ask server to pre-assign rarities to dig spots
 	"Dig",                -- dig a specific assigned spot -> returns its egg rarity
-	"PlaceEgg",           -- put an egg from inventory into the incubator
+	"PlaceEgg",           -- put an egg into the next free unlocked incubator
 	"DiscardEgg",         -- delete one unwanted egg of a rarity from the backpack
-	"CollectIncubator",   -- claim a finished hatch
+	"CollectIncubator",   -- claim a finished hatch from incubator slot index
+	"UnlockIncubator",    -- spend cash to unlock the next incubator (hatch more at once)
 	"BuyPlot",            -- buy another brainrot plot
+	"BuyLadder",          -- spend cash to unlock the ladder to the 2nd floor
 	"UpgradeLuck",        -- spend gems on Luck
 	"UpgradeIncubator",   -- spend cash/gems on the Incubator track (was UpgradeHatchSpeed)
 	"UpgradeShovel",      -- spend cash/gems on a faster dig shovel
 	"LevelBrainrot",      -- level up a single owned brainrot (Cash L2-5 / Gems L6-10)
 	"Rebirth",            -- perform a rebirth
 	"SellBrainrot",       -- sell an owned brainrot for cash
+	"TeleportHome",       -- teleport the player back to their own base
 }
 
 local FOLDER_NAME = "Remotes"

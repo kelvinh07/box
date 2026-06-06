@@ -21,6 +21,7 @@ local BrainrotConfig = require(Shared.Config.BrainrotConfig)
 local VariantConfig = require(Shared.Config.VariantConfig)
 local ZoneConfig = require(Shared.Config.ZoneConfig)
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
+local GameConfig = require(Shared.Config.GameConfig)
 local Util = require(Shared.Modules.Util)
 local Net = require(Shared.Modules.Net)
 
@@ -78,8 +79,19 @@ local function rollBase(tier: string, zone: number, luck: number): string?
 	return Util.choice(names)
 end
 
--- You can only hatch while standing near YOUR incubator.
+-- You can only hatch while standing near ONE OF your incubators.
 local INCUBATOR_RANGE = 24
+
+-- how many of this player's incubators currently hold an egg (pending hatches).
+local function pendingCount(profile: any): number
+	local n = 0
+	for i = 1, GameConfig.MaxIncubators do
+		if profile.Incubators[i] ~= nil then
+			n += 1
+		end
+	end
+	return n
+end
 
 ------------------------------------------------------------------ PlaceEgg
 function IncubationManager.placeEgg(player: Player, rarity: string): any
@@ -88,20 +100,27 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 		return { ok = false, reason = "No profile." }
 	end
 
-	-- proximity: must be within range (flat XZ) of THEIR incubator. If BaseManager
-	-- has no position yet (no incubator), skip the check so nothing breaks.
+	-- proximity: must be within range (flat XZ) of ANY of THEIR incubators. If
+	-- BaseManager has no positions yet, skip the check so nothing breaks.
 	if BaseManager then
-		local incPos = BaseManager.getIncubatorPosition(player)
-		if incPos then
+		local positions = BaseManager.getIncubatorPositions(player)
+		if positions and #positions > 0 then
 			local char = player.Character
 			local root = char and char:FindFirstChild("HumanoidRootPart")
 			if not root then
-				return { ok = false, reason = "Go to your incubator to hatch!" }
+				return { ok = false, reason = "Go to your incubators to hatch!" }
 			end
-			local dx = root.Position.X - incPos.X
-			local dz = root.Position.Z - incPos.Z
-			if (dx * dx + dz * dz) > (INCUBATOR_RANGE * INCUBATOR_RANGE) then
-				return { ok = false, reason = "Go to your incubator to hatch!" }
+			local near = false
+			for _, pos in ipairs(positions) do
+				local dx = root.Position.X - pos.X
+				local dz = root.Position.Z - pos.Z
+				if (dx * dx + dz * dz) <= (INCUBATOR_RANGE * INCUBATOR_RANGE) then
+					near = true
+					break
+				end
+			end
+			if not near then
+				return { ok = false, reason = "Go to your incubators to hatch!" }
 			end
 		end
 	end
@@ -109,9 +128,20 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 	if not EggConfig.exists(rarity) then
 		return { ok = false, reason = "Unknown egg." }
 	end
-	if profile.Incubator then
-		return { ok = false, reason = "Incubator is busy!" }
+
+	-- find the first FREE unlocked incubator slot
+	local unlocked = profile.IncubatorsUnlocked or 1
+	local slot
+	for i = 1, unlocked do
+		if profile.Incubators[i] == nil then
+			slot = i
+			break
+		end
 	end
+	if not slot then
+		return { ok = false, reason = "All incubators are busy!" }
+	end
+
 	if (profile.Eggs[rarity] or 0) <= 0 then
 		return { ok = false, reason = "You don't have that egg." }
 	end
@@ -121,8 +151,9 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 		return { ok = false, reason = "Not enough Cash to hatch." }
 	end
 
-	-- check there's room before committing
-	if #profile.Collection >= profile.Plots then
+	-- check there's room before committing: each pending hatch reserves a plot too, so
+	-- you can't over-commit more eggs than you have free plots.
+	if (#profile.Collection + pendingCount(profile)) >= profile.Plots then
 		return { ok = false, reason = "All plots are full!" }
 	end
 
@@ -134,7 +165,7 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 	local reduction = UpgradeConfig.incubatorReduction(profile.IncubatorLevel)
 	local duration = math.max(0.5, egg.Incubation * (1 - reduction))
 
-	profile.Incubator = {
+	profile.Incubators[slot] = {
 		rarity = rarity,
 		-- GetServerTimeNow() is synchronized between server & all clients, so the
 		-- client countdown matches the server exactly. It also persists across
@@ -145,16 +176,20 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
-	return { ok = true, duration = duration }
+	return { ok = true, slot = slot, duration = duration }
 end
 
 ------------------------------------------------------------------ Collect
-function IncubationManager.collect(player: Player): any
+function IncubationManager.collect(player: Player, index: number?): any
 	local profile = PlayerData.get(player)
 	if not profile then
 		return { ok = false, reason = "No profile." }
 	end
-	local inc = profile.Incubator
+	local slot = math.floor(tonumber(index) or 1)
+	if slot < 1 or slot > GameConfig.MaxIncubators then
+		return { ok = false, reason = "Invalid incubator." }
+	end
+	local inc = profile.Incubators[slot]
 	if not inc then
 		return { ok = false, reason = "Nothing is incubating." }
 	end
@@ -184,7 +219,7 @@ function IncubationManager.collect(player: Player): any
 		level = 1, -- brainrots start at level 1; levels persist through rebirth
 	}
 	table.insert(profile.Collection, entry)
-	profile.Incubator = nil
+	profile.Incubators[slot] = nil
 
 	-- spawn the physical podium model
 	if BaseManager then
@@ -199,6 +234,38 @@ function IncubationManager.collect(player: Player): any
 	Net.getEvent("ScreenShake"):FireClient(player, variant)
 
 	return { ok = true, entry = entry }
+end
+
+------------------------------------------------------------------ Unlock incubator
+-- Spend CASH to unlock the next incubator (lets you hatch one more egg at a time),
+-- up to GameConfig.MaxIncubators. Mirrors the brainrot-plot purchase flow.
+function IncubationManager.unlockIncubator(player: Player): any
+	local profile = PlayerData.get(player)
+	if not profile then
+		return { ok = false, reason = "No profile." }
+	end
+	local have = profile.IncubatorsUnlocked or 1
+	if have >= GameConfig.MaxIncubators then
+		return { ok = false, reason = "All incubators unlocked!" }
+	end
+	local cost = GameConfig.incubatorUnlockCost(have)
+	if not cost then
+		return { ok = false, reason = "All incubators unlocked!" }
+	end
+	if profile.Cash < cost then
+		return { ok = false, reason = "Not enough Cash." }
+	end
+	profile.Cash -= cost
+	profile.IncubatorsUnlocked = have + 1
+
+	-- reveal the newly-unlocked incubator (+ the next ghost) in the world
+	if BaseManager and BaseManager.refreshBaseProgression then
+		BaseManager.refreshBaseProgression(player)
+	end
+
+	PlayerData.markDirty(player)
+	PlayerData.push(player)
+	return { ok = true, unlocked = profile.IncubatorsUnlocked }
 end
 
 ------------------------------------------------------------------ Discard
@@ -225,8 +292,11 @@ function IncubationManager.init()
 	Net.getFunction("PlaceEgg").OnServerInvoke = function(player, rarity)
 		return IncubationManager.placeEgg(player, rarity)
 	end
-	Net.getFunction("CollectIncubator").OnServerInvoke = function(player)
-		return IncubationManager.collect(player)
+	Net.getFunction("CollectIncubator").OnServerInvoke = function(player, index)
+		return IncubationManager.collect(player, index)
+	end
+	Net.getFunction("UnlockIncubator").OnServerInvoke = function(player)
+		return IncubationManager.unlockIncubator(player)
 	end
 	Net.getFunction("DiscardEgg").OnServerInvoke = function(player, rarity)
 		return IncubationManager.discardEgg(player, rarity)

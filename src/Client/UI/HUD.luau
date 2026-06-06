@@ -1,8 +1,10 @@
 --!strict
 -- HUD
--- The always-on incubator panel (bottom-right): live progress bar + countdown +
--- COLLECT. The egg inventory now lives in the toggleable Backpack panel (see
--- UI/Backpack). (Digging is done in the world via the "E to Dig" prompt — see DigSite.)
+-- The always-on incubators panel (bottom-right): one row per UNLOCKED incubator (up to
+-- MaxIncubators), each with a live progress bar + countdown + its own COLLECT button.
+-- You unlock more incubators (to hatch more at once) by buying them in-world at your base.
+-- The egg inventory lives in the toggleable Backpack panel; digging is the "E to Dig"
+-- world prompt (see DigSite).
 
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -17,11 +19,17 @@ local Sounds = require(script.Parent.Parent.Sounds)
 
 local HUD = {}
 
------------------------------------------------------------------ incubator
-local function buildIncubator(gui: ScreenGui)
+local MAX_ROWS = 4   -- build all, show/hide by IncubatorsUnlocked
+local TITLE_H = 28
+local ROW_H = 46
+local PAD = 8
+
+type Row = { frame: Frame, fill: Frame, text: TextLabel, collect: TextButton }
+
+local function buildIncubators(gui: ScreenGui)
 	local panel = UIUtil.frame({
-		Name = "Incubator",
-		Size = UDim2.new(0, 300, 0, 120),
+		Name = "Incubators",
+		Size = UDim2.new(0, 320, 0, TITLE_H + MAX_ROWS * (ROW_H + 6) + PAD * 2),
 		Position = UDim2.new(1, -16, 1, -16),
 		AnchorPoint = Vector2.new(1, 1),
 		Parent = gui,
@@ -30,78 +38,111 @@ local function buildIncubator(gui: ScreenGui)
 	UIUtil.stroke(panel, 3, UIUtil.Colors.Gem)
 
 	local title = UIUtil.label({
-		Size = UDim2.new(1, -12, 0, 26),
-		Position = UDim2.new(0, 6, 0, 4),
-		Text = "🔮 Incubator",
+		Size = UDim2.new(1, -12, 0, TITLE_H),
+		Position = UDim2.new(0, 8, 0, 4),
+		Text = "🔮 Incubators",
 		TextColor3 = UIUtil.Colors.Gem,
 		Parent = panel,
 	})
 	title.TextXAlignment = Enum.TextXAlignment.Left
 
-	-- progress bar
-	local barBg = UIUtil.frame({
-		Size = UDim2.new(1, -16, 0, 26),
-		Position = UDim2.new(0, 8, 0, 34),
-		BackgroundColor3 = UIUtil.Colors.Outline,
-		Parent = panel,
-	})
-	UIUtil.corner(barBg, 13)
-	local barFill = UIUtil.frame({
-		Size = UDim2.new(0, 0, 1, 0),
-		BackgroundColor3 = UIUtil.Colors.Gem,
-		Parent = barBg,
-	})
-	UIUtil.corner(barFill, 13)
-	local barText = UIUtil.label({
-		Size = UDim2.fromScale(1, 1),
-		Text = "Empty",
-		Parent = barBg,
-	})
-	barText.ZIndex = 5
+	local rows: { Row } = {}
+	for i = 1, MAX_ROWS do
+		local idx = i -- capture for the collect closure
+		local row = UIUtil.frame({
+			Name = ("Inc%d"):format(i),
+			Size = UDim2.new(1, -16, 0, ROW_H),
+			Position = UDim2.new(0, 8, 0, TITLE_H + PAD + (i - 1) * (ROW_H + 6)),
+			BackgroundColor3 = UIUtil.Colors.Outline,
+			Parent = panel,
+		})
+		UIUtil.corner(row, 10)
 
-	local collectBtn = UIUtil.button({
-		Size = UDim2.new(1, -16, 0, 40),
-		Position = UDim2.new(0, 8, 0, 70),
-		BackgroundColor3 = UIUtil.Colors.Good,
-		Text = "COLLECT",
-		TextSize = 26,
-		Visible = false,
-		Parent = panel,
-	})
-	collectBtn.MouseButton1Click:Connect(function()
-		local result = ClientNet.invoke("CollectIncubator")
-		if result and result.ok then
-			Sounds.play("Sparkle")
-		end
-	end)
+		-- progress bar (fills the left part of the row)
+		local barBg = UIUtil.frame({
+			Size = UDim2.new(1, -104, 1, -12),
+			Position = UDim2.new(0, 8, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			BackgroundColor3 = Color3.fromRGB(28, 30, 44),
+			Parent = row,
+		})
+		UIUtil.corner(barBg, 9)
+		local fill = UIUtil.frame({
+			Size = UDim2.new(0, 0, 1, 0),
+			BackgroundColor3 = UIUtil.Colors.Gem,
+			Parent = barBg,
+		})
+		UIUtil.corner(fill, 9)
+		local text = UIUtil.label({
+			Size = UDim2.fromScale(1, 1),
+			Text = ("Inc %d — empty"):format(i),
+			TextSize = 18,
+			Parent = barBg,
+		})
+		text.ZIndex = 5
 
-	-- live countdown driven by Heartbeat (incubator endTime comes from server)
+		-- COLLECT button (right side; shown only when this incubator is ready)
+		local collect = UIUtil.button({
+			Size = UDim2.new(0, 88, 1, -12),
+			Position = UDim2.new(1, -8, 0.5, 0),
+			AnchorPoint = Vector2.new(1, 0.5),
+			BackgroundColor3 = UIUtil.Colors.Good,
+			Text = "COLLECT",
+			TextSize = 18,
+			Visible = false,
+			Parent = row,
+		})
+		collect.MouseButton1Click:Connect(function()
+			local result = ClientNet.invoke("CollectIncubator", idx)
+			if result and result.ok then
+				Sounds.play("Sparkle")
+			end
+		end)
+
+		rows[i] = { frame = row, fill = fill, text = text, collect = collect }
+	end
+
 	RunService.Heartbeat:Connect(function()
 		local state = ClientState.get()
-		local inc = state and state.Incubator
-		if not inc then
-			barFill.Size = UDim2.new(0, 0, 1, 0)
-			barText.Text = "Empty — dig & hatch an egg"
-			collectBtn.Visible = false
-			return
+		local unlocked = (state and state.IncubatorsUnlocked) or 1
+		local incs = (state and state.Incubators) or {}
+		local now = workspace:GetServerTimeNow()
+
+		for i = 1, MAX_ROWS do
+			local r = rows[i]
+			if i > unlocked then
+				r.frame.Visible = false
+			else
+				r.frame.Visible = true
+				local inc = incs[i]
+				if not inc then
+					r.fill.Size = UDim2.new(0, 0, 1, 0)
+					r.text.Text = ("Inc %d — empty"):format(i)
+					r.collect.Visible = false
+				else
+					local remaining = inc.endTime - now
+					local progress = 1 - math.clamp(remaining / math.max(inc.duration, 0.01), 0, 1)
+					r.fill.Size = UDim2.new(progress, 0, 1, 0)
+					if remaining <= 0 then
+						r.text.Text = ("%s — READY!"):format(inc.rarity)
+						r.fill.BackgroundColor3 = UIUtil.Colors.Good
+						r.collect.Visible = true
+					else
+						r.text.Text = ("%s — %s"):format(inc.rarity, Format.time(remaining))
+						r.fill.BackgroundColor3 = UIUtil.Colors.Gem
+						r.collect.Visible = false
+					end
+				end
+			end
 		end
-		local remaining = inc.endTime - workspace:GetServerTimeNow()
-		local progress = 1 - math.clamp(remaining / math.max(inc.duration, 0.01), 0, 1)
-		barFill.Size = UDim2.new(progress, 0, 1, 0)
-		if remaining <= 0 then
-			barText.Text = ("%s — READY!"):format(inc.rarity)
-			barFill.BackgroundColor3 = UIUtil.Colors.Good
-			collectBtn.Visible = true
-		else
-			barText.Text = ("%s — %s"):format(inc.rarity, Format.time(remaining))
-			barFill.BackgroundColor3 = UIUtil.Colors.Gem
-			collectBtn.Visible = false
-		end
+
+		-- shrink the panel to just the unlocked rows
+		panel.Size = UDim2.new(0, 320, 0, TITLE_H + unlocked * (ROW_H + 6) + PAD * 2)
 	end)
 end
 
 function HUD.build(gui: ScreenGui)
-	buildIncubator(gui)
+	buildIncubators(gui)
 end
 
 return HUD

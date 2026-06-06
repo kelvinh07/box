@@ -15,6 +15,7 @@ local UpgradeConfig = require(Shared.Config.UpgradeConfig)
 local ShovelConfig = require(Shared.Config.ShovelConfig)
 local ZoneConfig = require(Shared.Config.ZoneConfig)
 local Net = require(Shared.Modules.Net)
+local Format = require(Shared.Modules.Format)
 
 local PlayerData = {}
 
@@ -43,7 +44,13 @@ local function defaultProfile()
 		CurrentZone = 1,
 		Plots = GameConfig.StartingPlots,
 		Eggs = { Common = 0, Uncommon = 0, Rare = 0, Legendary = 0 },
-		Incubator = nil, -- { rarity, endTime, duration } | nil
+		-- MULTI-INCUBATION: up to GameConfig.MaxIncubators (4). IncubatorsUnlocked is how
+		-- many the player has (cash-bought, starts at 1); Incubators[i] holds the egg
+		-- currently hatching in incubator i ({ rarity, endTime, duration } | nil).
+		IncubatorsUnlocked = 1,
+		Incubators = {}, -- sparse array [1..MaxIncubators]
+		-- the 2nd-floor LADDER is a paid unlock (after owning all 12 floor-1 plots).
+		LadderUnlocked = false,
 		Collection = {},  -- array of { id, base, tier, variant, level }
 		Version = 1,
 	}
@@ -58,12 +65,28 @@ local function reconcile(profile: any)
 	end
 	profile.HatchSpeedLevel = nil
 
+	-- Migrate the OLD single Incubator -> the multi-incubator array's first slot.
+	if profile.Incubators == nil then
+		profile.Incubators = {}
+		if typeof(profile.Incubator) == "table" then
+			profile.Incubators[1] = profile.Incubator
+		end
+	end
+	profile.Incubator = nil
+
 	local def = defaultProfile()
 	for k, v in pairs(def) do
 		if profile[k] == nil then
 			profile[k] = v
 		end
 	end
+
+	-- Normalize the multi-incubator fields.
+	if typeof(profile.Incubators) ~= "table" then
+		profile.Incubators = {}
+	end
+	profile.IncubatorsUnlocked = math.clamp(profile.IncubatorsUnlocked or 1, 1, GameConfig.MaxIncubators)
+	profile.LadderUnlocked = profile.LadderUnlocked == true
 	if typeof(profile.Eggs) ~= "table" then
 		profile.Eggs = def.Eggs
 	end
@@ -119,6 +142,41 @@ function PlayerData.init()
 	end
 end
 
+-- The default Tab player list reads a `leaderstats` folder on the Player: a StringValue
+-- "Cash" (current total cash, formatted) and an IntValue "Rebirths".
+local function setupLeaderstats(player: Player, profile: any)
+	local existing = player:FindFirstChild("leaderstats")
+	if existing then
+		existing:Destroy()
+	end
+	local ls = Instance.new("Folder")
+	ls.Name = "leaderstats"
+	local cash = Instance.new("StringValue")
+	cash.Name = "Cash"
+	cash.Value = "$" .. Format.short(profile.Cash or 0)
+	cash.Parent = ls
+	local rb = Instance.new("IntValue")
+	rb.Name = "Rebirths"
+	rb.Value = profile.Rebirths or 0
+	rb.Parent = ls
+	ls.Parent = player
+end
+
+local function updateLeaderstats(player: Player, profile: any)
+	local ls = player:FindFirstChild("leaderstats")
+	if not ls then
+		return
+	end
+	local cash = ls:FindFirstChild("Cash")
+	if cash and cash:IsA("StringValue") then
+		cash.Value = "$" .. Format.short(profile.Cash or 0)
+	end
+	local rb = ls:FindFirstChild("Rebirths")
+	if rb and rb:IsA("IntValue") then
+		rb.Value = profile.Rebirths or 0
+	end
+end
+
 function PlayerData.load(player: Player)
 	local profile = defaultProfile()
 
@@ -145,6 +203,7 @@ function PlayerData.load(player: Player)
 
 	cache[player] = profile
 	dirty[player] = false
+	setupLeaderstats(player, profile)
 	return profile
 end
 
@@ -227,7 +286,15 @@ function PlayerData.snapshot(player: Player): any?
 		Eggs = p.Eggs,
 		EggCount = eggCount,
 		EggCapacity = GameConfig.eggCapacity(p.Rebirths),
-		Incubator = p.Incubator,
+		-- multi-incubation: how many are unlocked + each slot's live hatch state
+		IncubatorsUnlocked = p.IncubatorsUnlocked,
+		Incubators = p.Incubators,
+		MaxIncubators = GameConfig.MaxIncubators,
+		NextIncubatorCost = GameConfig.incubatorUnlockCost(p.IncubatorsUnlocked),
+		-- 2nd-floor ladder gating
+		LadderUnlocked = p.LadderUnlocked,
+		LadderCost = GameConfig.LadderCost,
+		FloorOnePlots = GameConfig.FloorOnePlots,
 		Collection = p.Collection,  -- each entry carries .level
 		-- derived
 		TotalLuck = UpgradeConfig.totalLuck(p.LuckLevel, p.Rebirths),
@@ -242,6 +309,10 @@ function PlayerData.snapshot(player: Player): any?
 end
 
 function PlayerData.push(player: Player)
+	local p = cache[player]
+	if p then
+		updateLeaderstats(player, p)
+	end
 	local snap = PlayerData.snapshot(player)
 	if snap then
 		Net.getEvent("PushState"):FireClient(player, snap)

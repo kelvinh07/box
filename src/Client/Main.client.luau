@@ -20,6 +20,7 @@ local Effects = require(UI.Effects)
 local TopBar = require(UI.TopBar)
 local HUD = require(UI.HUD)
 local Backpack = require(UI.Backpack)
+local HomeButton = require(UI.HomeButton)
 local Stands = require(UI.Stands)
 local Collection = require(UI.Collection)
 local Rebirth = require(UI.Rebirth)
@@ -60,6 +61,7 @@ startSafe("DigSite", function() DigSite.start(screen) end)
 startSafe("TopBar", function() TopBar.build(screen) end)
 startSafe("HUD", function() HUD.build(screen) end)
 startSafe("Backpack", function() Backpack.build(screen) end)
+startSafe("HomeButton", function() HomeButton.build(screen) end)
 
 -- modal panels
 local collection, rebirth

@@ -19,6 +19,7 @@ local Shared = ReplicatedStorage.Shared
 local RarityColors = require(Shared.Config.RarityColors)
 local ShovelConfig = require(Shared.Config.ShovelConfig)
 local Net = require(Shared.Modules.Net)
+local Surface = require(Shared.Modules.Surface)
 
 local UIUtil = require(script.Parent.UIUtil)
 local ClientNet = require(script.Parent.ClientNet)
@@ -77,9 +78,10 @@ local function buildDirt(model: Instance, x: number, topY: number, z: number): B
 		block.CFrame = CFrame.new(x + ox, topY + 0.25, z + oz) * CFrame.Angles(0, math.rad(math.random() * 180), 0)
 		local j = math.random(-12, 12)
 		block.Color = Color3.fromRGB(186 + j, 150 + j, 110 + j)
-		block.Material = Enum.Material.Sandstone
+		block.Material = Enum.Material.SmoothPlastic
 		block.Anchored = true
 		block.CanCollide = false
+		Surface.applyStuds(block) -- classic studded dirt patches, same look as the world
 		block.Parent = model
 		if i == 1 then
 			primary = block

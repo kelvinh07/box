@@ -5,33 +5,37 @@
 --   * the spawn point in the middle of the lobby arc.
 --
 -- Per-player bases, walls and ALL dig areas (entry/zone-1 included) are built by
--- BaseManager as one unified per-player lane. DigCenter/DigRadius below remain the
--- ring center + base sizing used by BaseManager.
+-- BaseManager as one unified per-player lane. DigCenter below remains the
+-- ring center used by BaseManager.
 
 local Workspace = game:GetService("Workspace")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ZoneConfig = require(ReplicatedStorage.Shared.Config.ZoneConfig)
 local Palette = require(ReplicatedStorage.Shared.Config.Palette)
+local Surface = require(ReplicatedStorage.Shared.Modules.Surface)
 
 local MapBuilder = {}
 
+-- Build an anchored part with the classic studded legoish look (Surface.applyStuds
+-- overlays the real Roblox studs texture on every face — `SurfaceType.Studs` alone no
+-- longer renders strongly enough). Pass `NoStuds = true` to opt a part out.
 local function makePart(props: { [string]: any }): BasePart
 	local p = Instance.new("Part")
 	p.Anchored = true
-	-- legoish look: glossy plastic + classic Roblox studs on top, inlets underneath
-	p.Material = Enum.Material.Plastic
-	p.TopSurface = Enum.SurfaceType.Studs
-	p.BottomSurface = Enum.SurfaceType.Inlet
+	p.Material = Enum.Material.SmoothPlastic
+	local noStuds = props.NoStuds
+	props.NoStuds = nil
 	for k, v in pairs(props) do
 		(p :: any)[k] = v
+	end
+	if not noStuds and Surface.shouldStud(p) then
+		Surface.applyStuds(p)
 	end
 	return p
 end
 
--- ring center + base sizing used by BaseManager (lanes fan out from here)
+-- ring center used by BaseManager (lanes fan out from here)
 MapBuilder.DigCenter = Vector3.new(0, 0, 0)
-MapBuilder.DigRadius = 34
 
 -- Frames the play area with a thick DIRT CLIFF capped by SNOW (grass-cliff look,
 -- snow on top). A square ring centered at (0, *, 30), inner half-extent 340 studs:
@@ -53,7 +57,6 @@ local function buildBorder(folder: Folder)
 			Name = "BorderDirt",
 			Size = w.size,
 			Color = Palette.Dirt,
-			Material = Enum.Material.Ground,
 			Anchored = true,
 			CanCollide = true,
 			CFrame = CFrame.new(w.pos.X, 1 + 55 / 2, w.pos.Z),
@@ -66,7 +69,6 @@ local function buildBorder(folder: Folder)
 			Name = "BorderSnow",
 			Size = Vector3.new(w.size.X + 4, 8, w.size.Z + 4),
 			Color = Palette.Snow,
-			Material = Enum.Material.Snow,
 			Anchored = true,
 			CanCollide = true,
 			CFrame = CFrame.new(w.pos.X, 1 + 55 + 8 / 2, w.pos.Z),
@@ -84,12 +86,11 @@ function MapBuilder.build()
 	folder.Name = "World"
 	folder.Parent = Workspace
 
-	-- big bright ground
+	-- big bright ground: clean studded plastic so the classic Roblox studs read crisply
 	makePart({
 		Name = "Ground",
 		Size = Vector3.new(1200, 2, 1200),
 		Color = Palette.Grass, -- vivid lime play-ground grass
-		Material = Enum.Material.Grass,
 		CFrame = CFrame.new(0, 0, 200),
 		Parent = folder,
 	})

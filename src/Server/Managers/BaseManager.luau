@@ -20,13 +20,15 @@ local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local CollectionService = game:GetService("CollectionService")
 local PhysicsService = game:GetService("PhysicsService")
+local InsertService = game:GetService("InsertService")
+local ServerStorage = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 
 local ZoneConfig = require(Shared.Config.ZoneConfig)
-local UpgradeConfig = require(Shared.Config.UpgradeConfig)
 local GameConfig = require(Shared.Config.GameConfig)
 local Palette = require(Shared.Config.Palette)
+local Surface = require(Shared.Modules.Surface)
 local Format = require(Shared.Modules.Format)
 local Net = require(Shared.Modules.Net)
 
@@ -34,6 +36,9 @@ local PlayerData = require(script.Parent.PlayerData)
 local BrainrotFactory = require(script.Parent.BrainrotFactory)
 local MapBuilder = require(script.Parent.MapBuilder)
 local EconomyManager = require(script.Parent.EconomyManager)
+-- IncubationManager uses BaseManager via INJECTION (no top-level require of BaseManager),
+-- so requiring it here for the ghost-incubator Buy click does NOT create a cycle.
+local IncubationManager = require(script.Parent.IncubationManager)
 
 local BaseManager = {}
 
@@ -91,15 +96,21 @@ local slotPodiums: { [number]: { BasePart } } = {}
 local slotModels: { [number]: { [string]: Model } } = {}           -- occupant brainrot models
 local slotPlates: { [number]: { [number]: any } } = {}             -- [podiumIndex] = {plate,label,debounce}
 local slotSign: { [number]: TextLabel } = {}                       -- the name TextLabel (toggles text)
-local slotPodiumCount: { [number]: number } = {}                   -- current podium count for the slot
-local slotIncubator: { [number]: BasePart } = {}                   -- the incubator base part per slot (for proximity checks)
-local slotStairBarrier: { [number]: { part: BasePart, label: TextLabel } } = {}  -- floor-2 staircase gate per slot
+-- the 4 incubator records per slot (built once); each: { base, dome, light, label, click, pos, index }
+local slotIncubators: { [number]: { any } } = {}
+-- the back-wall LADDER to floor 2 per slot: { truss, click, label, billboard }
+local slotLadder: { [number]: any } = {}
+-- the per-slot FLOOR-2 structure folder (reparented out of Workspace while hidden)
+local slotFloor2: { [number]: Folder } = {}
+-- a ServerStorage holder that hidden floor-2 structures + locked incubators live in
+-- (out of Workspace => invisible to everyone & non-collidable). Set in init().
+local hiddenHolder: Folder
 -- a GHOST "next plot" podium with a clickable Buy button, shown at the next free
 -- podium slot for an OCCUPIED base under MaxPlots (nil otherwise). { podium,label,cost }
 local slotGhostPlot: { [number]: any } = {}
 
--- forward declaration (defined below, called from buildBaseStructure)
-local updateStaircase: (slot: number) -> ()
+-- forward declaration (defined below, called from buildBaseStructure / assign / free)
+local refreshBaseProgression: (slot: number) -> ()
 
 local rebirthHandler: ((Player) -> any)? = nil
 function BaseManager.setRebirthHandler(fn: (Player) -> any)
@@ -131,15 +142,20 @@ local function nextFreeSlot(): number
 	return i
 end
 
+-- Build an anchored part with the classic studded legoish look (Surface.applyStuds
+-- overlays the real Roblox studs texture on every face). Glow/glass/wood/see-through
+-- parts auto-skip; pass `NoStuds = true` to force-skip (e.g. NPC limbs).
 local function makePart(props: { [string]: any }): BasePart
 	local p = Instance.new("Part")
 	p.Anchored = true
-	-- legoish look: glossy plastic + classic Roblox studs on top, inlets underneath
-	p.Material = Enum.Material.Plastic
-	p.TopSurface = Enum.SurfaceType.Studs
-	p.BottomSurface = Enum.SurfaceType.Inlet
+	p.Material = Enum.Material.SmoothPlastic
+	local noStuds = props.NoStuds
+	props.NoStuds = nil
 	for k, v in pairs(props) do
 		(p :: any)[k] = v
+	end
+	if not noStuds and Surface.shouldStud(p) then
+		Surface.applyStuds(p)
 	end
 	return p
 end
@@ -402,7 +418,6 @@ local function rebuildSlotPodiums(slot: number, count: number)
 		-- pressure plate just INWARD of the podium (toward the central walkway)
 		buildPlate(slot, i, origin * CFrame.new(lx - side * 6, baseLY + PLATE.Y / 2, lz), folder)
 	end
-	slotPodiumCount[slot] = count
 
 	-- rebuild the GHOST next-slot Buy podium: destroy any prior one FIRST, then show
 	-- it only for an OCCUPIED base that is still under MaxPlots, at index count+1.
@@ -413,8 +428,15 @@ local function rebuildSlotPodiums(slot: number, count: number)
 		end
 		slotGhostPlot[slot] = nil
 	end
+	-- show the ghost Buy podium for an OCCUPIED base under MaxPlots, EXCEPT once the
+	-- player has filled floor 1 (12 plots) and not yet bought the ladder — there the
+	-- next purchase is the LADDER, not a floor-2 plot.
 	if slotOccupant[slot] ~= nil and count < GameConfig.MaxPlots then
-		buildGhostPlot(slot, count)
+		local occProfile = PlayerData.get(slotOccupant[slot])
+		local ladderUnlocked = occProfile and occProfile.LadderUnlocked or false
+		if count < GameConfig.FloorOnePlots or ladderUnlocked then
+			buildGhostPlot(slot, count)
+		end
 	end
 end
 
@@ -495,7 +517,7 @@ local function placeBrainrotForSlot(slot: number, player: Player, entry: any)
 end
 
 ----------------------------------------------------------------- place / remove brainrot (public)
-function BaseManager.placeBrainrot(player: Player, entry: any, skipPush: boolean?)
+function BaseManager.placeBrainrot(player: Player, entry: any)
 	local slot = playerSlot[player]
 	if not slot then
 		return
@@ -544,39 +566,55 @@ function BaseManager.rebuildPlots(player: Player)
 		placeBrainrotForSlot(slot, player, entry)
 	end
 
-	-- buying the 12th plot opens the floor-2 staircase
-	updateStaircase(slot)
+	-- refresh ladder / floor-2 / incubator visibility after a plot change
+	refreshBaseProgression(slot)
 end
 
 ----------------------------------------------------------------- building shell
-local function buildIncubator(cf: CFrame, parent: Instance): BasePart
+-- back-of-base layout: 4 incubators in a row near the back wall + a centered LADDER.
+local INCUBATOR_XS = { -22, -8, 8, 22 }       -- 4 spots spread across the back
+local INCUBATOR_LZ = FLOOR.Z / 2 - 7          -- inside, just in front of the back wall
+local LADDER_H = FLOOR2_Y + 3 - 1             -- floor 1 (y=1) up to a bit above floor 2
+local LADDER_HOLE_HALF_X = 3.5                -- half-width of the floor-2 climb-through hole
+local LADDER_HOLE_FRONT_LZ = FLOOR.Z / 2 - 9  -- hole runs from here back to the back wall
+
+-- Build ONE incubator unit (base + glass dome) at floor-XZ `cf`, wrapped in a Model so it
+-- can be reparented out of Workspace to HIDE it (studs are decals, so transparency alone
+-- wouldn't hide them). Returns a record driven by setIncubatorState. The ClickDetector
+-- buys the next incubator when shown as a ghost.
+local function buildIncubator(slot: number, cf: CFrame, index: number): any
+	local home = slotFolder[slot]
+	local unit = Instance.new("Model")
+	unit.Name = ("IncubatorUnit_%d"):format(index)
+	unit.Parent = home
+
 	local base = makePart({
 		Name = "Incubator",
-		Size = Vector3.new(6, 5, 5),
+		Size = Vector3.new(5, 4.5, 4),
 		Color = Palette.Incubator,
 		Material = Enum.Material.Metal,
-		CFrame = cf * CFrame.new(0, 2.5, 0),
-		Parent = parent,
+		CFrame = cf * CFrame.new(0, 2.25, 0),
+		Parent = unit,
 	})
 	local dome = makePart({
 		Name = "Dome",
 		Shape = Enum.PartType.Ball,
-		Size = Vector3.new(4, 4, 4),
+		Size = Vector3.new(3.4, 3.4, 3.4),
 		Color = Palette.Glass,
 		Material = Enum.Material.Glass,
 		Transparency = 0.4,
 		CanCollide = false,
-		CFrame = base.CFrame * CFrame.new(0, 3, 0),
-		Parent = parent,
+		CFrame = base.CFrame * CFrame.new(0, 2.6, 0),
+		Parent = unit,
 	})
 	local light = Instance.new("PointLight")
 	light.Color = Color3.fromRGB(150, 230, 255)
 	light.Brightness = 3
-	light.Range = 14
+	light.Range = 12
 	light.Parent = dome
 	local bb = Instance.new("BillboardGui")
-	bb.Size = UDim2.new(0, 130, 0, 32)
-	bb.StudsOffset = Vector3.new(0, 4.5, 0)
+	bb.Size = UDim2.new(0, 150, 0, 40)
+	bb.StudsOffset = Vector3.new(0, 4, 0)
 	bb.AlwaysOnTop = true
 	bb.MaxDistance = 140
 	bb.Parent = base
@@ -589,7 +627,101 @@ local function buildIncubator(cf: CFrame, parent: Instance): BasePart
 	lbl.TextColor3 = Color3.fromRGB(150, 230, 255)
 	lbl.TextStrokeTransparency = 0
 	lbl.Parent = bb
-	return base
+
+	local click = Instance.new("ClickDetector")
+	click.MaxActivationDistance = 0 -- enabled only in the ghost (buy) state
+	click.Parent = base
+	click.MouseClick:Connect(function(clicker: Player)
+		if clicker ~= slotOccupant[slot] then
+			return
+		end
+		local res = IncubationManager.unlockIncubator(clicker)
+		if res and res.ok == false and res.reason then
+			Net.getEvent("Notify"):FireClient(clicker, { title = "Incubator", text = res.reason, color = "Legendary" })
+		end
+	end)
+
+	return { model = unit, home = home, base = base, dome = dome, light = light, label = lbl, click = click, index = index, pos = base.Position }
+end
+
+-- Drive an incubator unit's look: "real" (unlocked, solid + glowing), "ghost" (next to
+-- buy, translucent + Buy label + clickable) or "hidden" (reparented out of Workspace).
+local function setIncubatorState(rec: any, state: string, cost: number?, canAfford: boolean?)
+	if state == "hidden" then
+		if rec.model.Parent ~= hiddenHolder then
+			rec.model.Parent = hiddenHolder
+		end
+		return
+	end
+	if rec.model.Parent ~= rec.home then
+		rec.model.Parent = rec.home
+	end
+	if state == "real" then
+		rec.base.Transparency = 0
+		rec.base.CanCollide = true
+		rec.base.Color = Palette.Incubator
+		rec.dome.Transparency = 0.4
+		rec.light.Enabled = true
+		rec.label.Text = ("🥚 INCUBATOR %d"):format(rec.index)
+		rec.label.TextColor3 = Color3.fromRGB(150, 230, 255)
+		rec.click.MaxActivationDistance = 0
+	else -- ghost
+		rec.base.Transparency = 0.5
+		rec.base.CanCollide = false
+		rec.base.Color = Palette.Wall
+		rec.dome.Transparency = 0.85
+		rec.light.Enabled = false
+		rec.label.Text = ("🔒 Buy Incubator\n$%s"):format(Format.short(cost or 0))
+		rec.label.TextColor3 = canAfford and Color3.fromRGB(150, 255, 150) or Color3.fromRGB(255, 200, 150)
+		rec.click.MaxActivationDistance = 28
+	end
+end
+
+-- Build the back-wall LADDER (a climbable truss) to floor 2 for `slot`. Driven by
+-- refreshBaseProgression: hidden < 12 plots, a buyable ghost at 12 plots, climbable once
+-- the ladder is bought. The Buy click routes to EconomyManager.buyLadder.
+local function buildLadder(slot: number, origin: CFrame): any
+	local home = slotFolder[slot]
+	local truss = Instance.new("TrussPart")
+	truss.Name = "Ladder"
+	truss.Anchored = true
+	truss.Color = Palette.BaseTrim
+	truss.Size = Vector3.new(2, LADDER_H, 2)
+	truss.CFrame = origin * CFrame.new(0, 1 + LADDER_H / 2, FLOOR.Z / 2 - 2.5)
+	truss.Transparency = 1
+	truss.CanCollide = false
+	truss.Parent = home
+
+	local bb = Instance.new("BillboardGui")
+	bb.Size = UDim2.new(0, 180, 0, 52)
+	bb.StudsOffset = Vector3.new(0, 3, 0)
+	bb.AlwaysOnTop = true
+	bb.MaxDistance = 130
+	bb.Parent = truss
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.FredokaOne
+	lbl.TextScaled = true
+	lbl.Text = ""
+	lbl.TextColor3 = Color3.fromRGB(255, 230, 150)
+	lbl.TextStrokeTransparency = 0
+	lbl.Parent = bb
+
+	local click = Instance.new("ClickDetector")
+	click.MaxActivationDistance = 0
+	click.Parent = truss
+	click.MouseClick:Connect(function(clicker: Player)
+		if clicker ~= slotOccupant[slot] then
+			return
+		end
+		local res = EconomyManager.buyLadder(clicker)
+		if res and res.ok == false and res.reason then
+			Net.getEvent("Notify"):FireClient(clicker, { title = "Ladder", text = res.reason, color = "Legendary" })
+		end
+	end)
+
+	return { truss = truss, label = lbl, billboard = bb, click = click }
 end
 
 -- a SHARED per-zone rebirth gate on the one central lane. Wall #k sits between the
@@ -676,12 +808,11 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 	local yaw = math.atan2(farDir.X, farDir.Z)
 	local rot = CFrame.Angles(0, yaw, 0)
 
-	-- grass border (same look as the central dig site)
+	-- grass border (same studded look as the central dig site)
 	makePart({
 		Name = "ZoneBorder",
 		Size = SEG_SIZE + Vector3.new(12, -0.4, 12),
 		Color = Palette.Grass,
-		Material = Enum.Material.Grass,
 		CFrame = CFrame.new(pos.X, LANE_SEG_Y - 0.2, pos.Z) * rot,
 		Parent = parent,
 	})
@@ -692,7 +823,6 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 		-- the dig field's FIRST LAYER is a dark brown earth, deliberately DARKER than
 		-- the tan dirt mounds (~RGB 186,150,110) the client scatters on top of it.
 		Color = Palette.DigField,
-		Material = Enum.Material.Ground,
 		CFrame = CFrame.new(pos.X, LANE_SEG_Y, pos.Z) * rot,
 		Parent = parent,
 	})
@@ -753,163 +883,70 @@ end
 -- slab with a back-center staircase opening, roof, split back wall with a centered
 -- staircase doorway, the staircase itself, and a removable staircase barrier.
 -- Returns the incubator's base part (placed just outside the open front).
-local function buildBuilding(slot: number, origin: CFrame, parent: Instance): BasePart
+-- Build a slot's building. Floor-1 structure goes to `parent`; ALL floor-2 structure
+-- goes into a "Floor2" folder that refreshBaseProgression reparents out of Workspace to
+-- HIDE it until the occupant buys the ladder. Also builds the 4 back incubators + the
+-- centered back-wall ladder. Populates slotIncubators / slotLadder / slotFloor2.
+local function buildBuilding(slot: number, origin: CFrame, parent: Instance)
 	local wallColor = Palette.BaseWall
 	local trimColor = Palette.BaseTrim
-	local SIDE_H = 2 * WALL_H + WALL_T          -- side walls span both floors
-	local SIDE_MID = 1 + SIDE_H / 2             -- center Y of a full-height side wall
 
-	-- per-floor window: a glass strip + brick above/below it on each side wall
-	local function sideFloor(x: number, baseLY: number)
-		-- baseLY = floor surface; wall section spans baseLY .. baseLY + WALL_H
-		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, 7, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + 3.5, 0), Parent = parent })
-		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, 7, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + WALL_H - 3.5, 0), Parent = parent })
-		makePart({ Name = "Window", Size = Vector3.new(WALL_T * 0.5, 8, FLOOR.Z - 5), Color = Palette.Glass, Material = Enum.Material.Glass, Transparency = 0.5, CanCollide = false, CFrame = origin * CFrame.new(x, baseLY + WALL_H / 2, 0), Parent = parent })
+	local f2 = Instance.new("Folder")
+	f2.Name = "Floor2"
+	f2.Parent = parent
+	slotFloor2[slot] = f2
+
+	-- per-floor side window section (glass strip + brick above/below). `dest` routes the
+	-- parts to floor 1 (parent) or floor 2 (f2).
+	local function sideFloor(x: number, baseLY: number, dest: Instance)
+		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, 7, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + 3.5, 0), Parent = dest })
+		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, 7, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + WALL_H - 3.5, 0), Parent = dest })
+		makePart({ Name = "Window", Size = Vector3.new(WALL_T * 0.5, 8, FLOOR.Z - 5), Color = Palette.Glass, Material = Enum.Material.Glass, Transparency = 0.5, CanCollide = false, CFrame = origin * CFrame.new(x, baseLY + WALL_H / 2, 0), Parent = dest })
 	end
 
+	-- side walls + corner pillars, split per floor so the upper halves can hide.
+	local pillarH = WALL_H + WALL_T
 	for _, sx in ipairs({ -1, 1 }) do
 		local x = sx * (FLOOR.X / 2)
-		sideFloor(x, 1)            -- floor 1 window section
-		sideFloor(x, FLOOR2_Y)     -- floor 2 window section
-		-- full-height corner pillars (front + back), spanning both floors
-		makePart({ Name = "Pillar", Size = Vector3.new(WALL_T + 1.5, SIDE_H, WALL_T + 1.5), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(x, SIDE_MID, -FLOOR.Z / 2), Parent = parent })
-		makePart({ Name = "Pillar", Size = Vector3.new(WALL_T + 1.5, SIDE_H, WALL_T + 1.5), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(x, SIDE_MID, FLOOR.Z / 2), Parent = parent })
+		sideFloor(x, 1, parent)       -- floor 1
+		sideFloor(x, FLOOR2_Y, f2)    -- floor 2 (hidden until ladder)
+		for _, lz in ipairs({ -FLOOR.Z / 2, FLOOR.Z / 2 }) do
+			makePart({ Name = "Pillar", Size = Vector3.new(WALL_T + 1.5, pillarH, WALL_T + 1.5), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(x, 1 + pillarH / 2, lz), Parent = parent })
+			makePart({ Name = "Pillar", Size = Vector3.new(WALL_T + 1.5, pillarH, WALL_T + 1.5), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(x, FLOOR2_Y + pillarH / 2, lz), Parent = f2 })
+		end
 	end
 
 	-- floor-1 slab
-	makePart({
-		Name = "Platform",
-		Size = FLOOR,
-		Color = Palette.BaseFloor,
-		Material = Enum.Material.SmoothPlastic,
-		CFrame = origin,
-		Parent = parent,
-	})
+	makePart({ Name = "Platform", Size = FLOOR, Color = Palette.BaseFloor, Material = Enum.Material.SmoothPlastic, CFrame = origin, Parent = parent })
 
-	-- floor-2 slab at FLOOR2_Y, built as TWO segments (left/right of a back-center
-	-- staircase opening) so players can walk up through the gap. The opening spans
-	-- the back STAIR_GAP wide and ~STAIR_GAP deep at the +Z back edge.
+	-- floor-2 slab (in f2) with a back-center HOLE the ladder climbs through.
 	do
-		local slabMidY = FLOOR2_Y - WALL_T / 2  -- center of the WALL_T-thick slab
-		-- left + right strips (run full depth) flanking the central staircase well
-		local sideW = (FLOOR.X - STAIR_GAP) / 2
+		local slabMidY = FLOOR2_Y - WALL_T / 2
+		local sideW = FLOOR.X / 2 - LADDER_HOLE_HALF_X
 		for _, sx in ipairs({ -1, 1 }) do
-			makePart({
-				Name = "Floor2Slab",
-				Size = Vector3.new(sideW, WALL_T, FLOOR.Z),
-				Color = Palette.BaseFloor,
-				Material = Enum.Material.SmoothPlastic,
-				CFrame = origin * CFrame.new(sx * (STAIR_GAP / 2 + sideW / 2), slabMidY, 0),
-				Parent = parent,
-			})
+			makePart({ Name = "Floor2Slab", Size = Vector3.new(sideW, WALL_T, FLOOR.Z), Color = Palette.BaseFloor, Material = Enum.Material.SmoothPlastic, CFrame = origin * CFrame.new(sx * (LADDER_HOLE_HALF_X + sideW / 2), slabMidY, 0), Parent = f2 })
 		end
-		-- center strip in FRONT of the stairwell (connects the two side slabs); the
-		-- stairwell OPENING runs from the well entrance back to the back wall so the
-		-- whole staircase has headroom and the player emerges onto the side slabs.
-		local frontLen = STAIR_ENTRANCE_LZ - (-FLOOR.Z / 2) -- from front edge to well entrance
-		makePart({
-			Name = "Floor2Slab",
-			Size = Vector3.new(STAIR_GAP, WALL_T, frontLen),
-			Color = Palette.BaseFloor,
-			Material = Enum.Material.SmoothPlastic,
-			CFrame = origin * CFrame.new(0, slabMidY, -FLOOR.Z / 2 + frontLen / 2),
-			Parent = parent,
-		})
+		local frontLen = LADDER_HOLE_FRONT_LZ - (-FLOOR.Z / 2) -- front edge to the hole
+		makePart({ Name = "Floor2Slab", Size = Vector3.new(2 * LADDER_HOLE_HALF_X, WALL_T, frontLen), Color = Palette.BaseFloor, Material = Enum.Material.SmoothPlastic, CFrame = origin * CFrame.new(0, slabMidY, -FLOOR.Z / 2 + frontLen / 2), Parent = f2 })
 	end
 
-	-- roof on top of floor 2 + front header beams (entrance stays open below them)
-	local roofY = 1 + SIDE_H + WALL_T / 2
-	makePart({ Name = "Roof", Size = Vector3.new(FLOOR.X + 3, WALL_T, FLOOR.Z + 3), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, roofY, 0), Parent = parent })
+	-- roof + headers + floor-2 rail (roof, upper header & rail are floor-2)
+	local roofY = 1 + 2 * WALL_H + WALL_T + WALL_T / 2
+	makePart({ Name = "Roof", Size = Vector3.new(FLOOR.X + 3, WALL_T, FLOOR.Z + 3), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, roofY, 0), Parent = f2 })
 	makePart({ Name = "Header", Size = Vector3.new(FLOOR.X, 4, WALL_T), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, 1 + WALL_H - 2, -FLOOR.Z / 2), Parent = parent })
-	makePart({ Name = "Header", Size = Vector3.new(FLOOR.X, 4, WALL_T), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, FLOOR2_Y + WALL_H - 2, -FLOOR.Z / 2), Parent = parent })
+	makePart({ Name = "Header", Size = Vector3.new(FLOOR.X, 4, WALL_T), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, FLOOR2_Y + WALL_H - 2, -FLOOR.Z / 2), Parent = f2 })
+	makePart({ Name = "Floor2Rail", Size = Vector3.new(FLOOR.X, 3, WALL_T * 0.7), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, FLOOR2_Y + 1.5, -FLOOR.Z / 2), Parent = f2 })
 
-	-- optional low railing along the floor-2 open front (so players don't fall out)
-	makePart({ Name = "Floor2Rail", Size = Vector3.new(FLOOR.X, 3, WALL_T * 0.7), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, FLOOR2_Y + 1.5, -FLOOR.Z / 2), Parent = parent })
+	-- SOLID back wall, split floor 1 (visible) / floor 2 (in f2)
+	makePart({ Name = "BackWall", Size = Vector3.new(FLOOR.X, WALL_H, WALL_T), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(0, 1 + WALL_H / 2, FLOOR.Z / 2), Parent = parent })
+	makePart({ Name = "BackWall", Size = Vector3.new(FLOOR.X, WALL_H, WALL_T), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(0, FLOOR2_Y + WALL_H / 2, FLOOR.Z / 2), Parent = f2 })
 
-	-- the open front is local -Z (toward the dig center); put the incubator just
-	-- outside it so players hatch at the front of their base.
-	local incubator = buildIncubator(origin * CFrame.new(0, 0, -FLOOR.Z / 2 - 8), parent)
-
-	-- BACK wall at +FLOOR.Z/2, built as TWO segments leaving a centered STAIR_GAP-wide
-	-- gap for the staircase doorway. Spans both floors (full SIDE_H height).
-	do
-		local segW = (FLOOR.X - STAIR_GAP) / 2
-		for _, sx in ipairs({ -1, 1 }) do
-			makePart({
-				Name = "BackWall",
-				Size = Vector3.new(segW, SIDE_H, WALL_T),
-				Color = wallColor,
-				Material = Enum.Material.Brick,
-				CFrame = origin * CFrame.new(sx * (STAIR_GAP / 2 + segW / 2), SIDE_MID, FLOOR.Z / 2),
-				Parent = parent,
-			})
-		end
+	-- 4 incubators across the back + the centered back-wall ladder to floor 2
+	slotIncubators[slot] = {}
+	for i, lx in ipairs(INCUBATOR_XS) do
+		slotIncubators[slot][i] = buildIncubator(slot, origin * CFrame.new(lx, 0, INCUBATOR_LZ), i)
 	end
-
-	-- STAIRCASE in the back gap: steps at x=0 rising from the FRONT (low, room side)
-	-- toward the BACK wall (high, at floor-2 level), enclosed by stairwell side walls
-	-- so the lock can't be bypassed. The player emerges sideways onto the side slabs.
-	do
-		-- enclosing well side walls at the hole edges (x = +/- STAIR_GAP/2), from the
-		-- well entrance back to the back wall, one floor tall.
-		local wellLen = FLOOR.Z / 2 - STAIR_ENTRANCE_LZ
-		for _, sx in ipairs({ -1, 1 }) do
-			makePart({
-				Name = "StairWell",
-				Size = Vector3.new(WALL_T, WALL_H, wellLen),
-				Color = wallColor,
-				Material = Enum.Material.Brick,
-				CFrame = origin * CFrame.new(sx * (STAIR_GAP / 2), 1 + WALL_H / 2, STAIR_ENTRANCE_LZ + wellLen / 2),
-				Parent = parent,
-			})
-		end
-		-- steps: s=1 lowest at the front, climbing toward the back wall up to floor 2
-		for s = 1, STAIR_STEPS do
-			local lz = STAIR_FRONT_LZ + (s - 1) * STAIR_STEP_D
-			makePart({
-				Name = "Step",
-				Size = Vector3.new(STAIR_GAP, s * STAIR_STEP_H, STAIR_STEP_D),
-				Color = trimColor,
-				Material = Enum.Material.Metal,
-				CFrame = origin * CFrame.new(0, 1 + (s * STAIR_STEP_H) / 2, lz),
-				Parent = parent,
-			})
-		end
-	end
-
-	-- STAIRCASE BARRIER: a translucent red collidable wall blocking the bottom of the
-	-- staircase doorway until the occupant owns all 12 floor-1 plots. Stored per slot.
-	do
-		local barrier = makePart({
-			Name = "StairBarrier",
-			Size = Vector3.new(STAIR_GAP, WALL_H - 2, WALL_T),
-			Color = Palette.LockRed,
-			Material = Enum.Material.Neon,
-			Transparency = 0.5,
-			-- blocks the stairwell ENTRANCE at the front (room side) so the well can't be entered
-			CFrame = origin * CFrame.new(0, 1 + (WALL_H - 2) / 2, STAIR_ENTRANCE_LZ),
-			Parent = parent,
-		})
-		barrier.CanCollide = true
-		local bb = Instance.new("BillboardGui")
-		bb.Size = UDim2.new(0, 170, 0, 40)
-		bb.StudsOffset = Vector3.new(0, 2, 0)
-		bb.AlwaysOnTop = true
-		bb.MaxDistance = 120
-		bb.Parent = barrier
-		local lbl = Instance.new("TextLabel")
-		lbl.Size = UDim2.fromScale(1, 1)
-		lbl.BackgroundTransparency = 1
-		lbl.Font = Enum.Font.FredokaOne
-		lbl.TextScaled = true
-		lbl.Text = "🔒 Own all 12 plots"
-		lbl.TextColor3 = Color3.fromRGB(255, 180, 180)
-		lbl.TextStrokeTransparency = 0
-		lbl.Parent = bb
-		slotStairBarrier[slot] = { part = barrier, label = lbl }
-	end
-
-	return incubator
+	slotLadder[slot] = buildLadder(slot, origin)
 end
 
 -- the ONE SHARED dig progression LANE: a single straight line down the half-circle
@@ -967,7 +1004,104 @@ end
 -- flanking END plot (slots 9 & 10) to the matching end of the zone1/2 wall, so a
 -- player can't walk AROUND the wall to skip into zone 2. Always collidable (default
 -- group) — only the central wall is the per-player gate.
-local FENCE_H = 28 -- jump height is ~7 studs, so this is comfortably un-jumpable
+-- The lane-flanking side barriers at the zone1/2 boundary. TWO layers:
+--   1) a TALL INVISIBLE collidable wall (named ZoneFence_*) so a player can NEVER jump
+--      or glitch over to skip into zone 2 (jump height ~7 studs; this barrier is 60 tall).
+--   2) a VISIBLE studded fence in front of it -- the asset 4831942116 tiled along the span
+--      when the game owner can load it, else a procedural studded picket fence.
+-- LeaderboardManager finds the ZoneFence_* reference part to place its tombstone.
+local FENCE_VIS_H = 14      -- visible fence height
+local FENCE_BARRIER_H = 60  -- tall invisible anti-jump/glitch wall
+local FENCE_ASSET = 4831942116
+
+local fenceTemplate: Model? = nil
+local fenceTried = false
+local function getFenceTemplate(): Model?
+	if fenceTried then
+		return fenceTemplate
+	end
+	fenceTried = true
+	local ok, asset = pcall(function()
+		return InsertService:LoadAsset(FENCE_ASSET)
+	end)
+	if ok and asset then
+		local obj = asset:FindFirstChildWhichIsA("Model") or asset:FindFirstChildWhichIsA("BasePart")
+		if obj then
+			local clone = obj:Clone()
+			local model: Model
+			if clone:IsA("Model") then
+				model = clone
+			else
+				model = Instance.new("Model")
+				clone.Parent = model
+			end
+			for _, d in ipairs(model:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Anchored = true
+					d.CanCollide = false
+					d.CastShadow = false
+				end
+			end
+			fenceTemplate = model
+		end
+		asset:Destroy()
+	end
+	return fenceTemplate
+end
+
+-- a procedural STUDDED picket fence of `length` centered on `baseCF` (sitting on the
+-- ground, local +Z = run direction): posts every ~7 studs + two horizontal rails.
+local function buildProceduralFence(baseCF: CFrame, length: number, parent: Instance)
+	local spacing = 7
+	local nPosts = math.max(2, math.floor(length / spacing) + 1)
+	for i = 0, nPosts - 1 do
+		local lz = -length / 2 + (i / (nPosts - 1)) * length
+		makePart({
+			Name = "FencePost",
+			Size = Vector3.new(1.8, FENCE_VIS_H, 1.8),
+			Color = Palette.Fence,
+			CanCollide = false,
+			CFrame = baseCF * CFrame.new(0, FENCE_VIS_H / 2, lz),
+			Parent = parent,
+		})
+	end
+	for _, ry in ipairs({ FENCE_VIS_H * 0.34, FENCE_VIS_H * 0.72 }) do
+		makePart({
+			Name = "FenceRail",
+			Size = Vector3.new(0.9, 1.6, length),
+			Color = Palette.Fence,
+			CanCollide = false,
+			CFrame = baseCF * CFrame.new(0, ry, 0),
+			Parent = parent,
+		})
+	end
+end
+
+-- tile the loaded fence asset along the span, else the procedural studded fence.
+local function buildFenceDecor(baseCF: CFrame, length: number, parent: Instance)
+	local tmpl = getFenceTemplate()
+	if not tmpl then
+		buildProceduralFence(baseCF, length, parent)
+		return
+	end
+	local _, size = tmpl:GetBoundingBox()
+	local seg = math.max(size.X, size.Z, 4) -- longest horizontal extent == one section
+	local n = math.max(1, math.floor(length / seg + 0.5))
+	local step = length / n
+	for i = 1, n do
+		local clone = tmpl:Clone()
+		local _, s0 = clone:GetBoundingBox()
+		if s0.Y > 0.01 then
+			pcall(function() clone:ScaleTo(FENCE_VIS_H / s0.Y) end)
+		end
+		local _, s = clone:GetBoundingBox()
+		local lz = -length / 2 + (i - 0.5) * step
+		-- run the section's long axis along local Z and stand it on the ground
+		clone:PivotTo(baseCF * CFrame.new(0, s.Y / 2, lz) * CFrame.Angles(0, math.rad(90), 0))
+		clone.Parent = parent
+	end
+end
+
 local function buildLaneFences()
 	local wallZ = LANE_START + LANE_STEP / 2 -- zone1/2 (k=1) wall center z
 	local wallHalfX = REBIRTH_WALL.X / 2
@@ -976,8 +1110,8 @@ local function buildLaneFences()
 		{ slot = 10, sign = 1, name = "ZoneFence_Right" },
 	}) do
 		local wallEnd = Vector3.new(fence.sign * wallHalfX, 0, wallZ) -- end of the wall on this side
-		-- anchor the fence at the end-plot footprint CORNER nearest that wall end, so it
-		-- meets the building at its edge instead of clipping through the plot interior.
+		-- anchor at the end-plot footprint CORNER nearest that wall end, so it meets the
+		-- building at its edge instead of clipping through the plot interior.
 		local origin = baseOrigin(fence.slot)
 		local best = wallEnd
 		local bestD = math.huge
@@ -992,16 +1126,222 @@ local function buildLaneFences()
 			end
 		end
 		local dx, dz = wallEnd.X - best.X, wallEnd.Z - best.Z
-		local length = math.sqrt(dx * dx + dz * dz)
+		local length = math.max(math.sqrt(dx * dx + dz * dz), 1)
+		local angle = math.atan2(dx, dz)
+		local midX, midZ = (best.X + wallEnd.X) / 2, (best.Z + wallEnd.Z) / 2
+
+		-- 1) tall INVISIBLE collidable barrier (the anti jump/glitch wall + ref part)
 		makePart({
 			Name = fence.name,
-			Size = Vector3.new(2, FENCE_H, math.max(length, 1)),
-			Color = Palette.Fence,
-			Material = Enum.Material.WoodPlanks,
-			CFrame = CFrame.new((best.X + wallEnd.X) / 2, 1 + FENCE_H / 2, (best.Z + wallEnd.Z) / 2)
-				* CFrame.Angles(0, math.atan2(dx, dz), 0),
+			Size = Vector3.new(2, FENCE_BARRIER_H, length),
+			Transparency = 1,
+			NoStuds = true,
+			CanCollide = true,
+			CFrame = CFrame.new(midX, 1 + FENCE_BARRIER_H / 2, midZ) * CFrame.Angles(0, angle, 0),
 			Parent = laneFolder,
 		})
+
+		-- 2) visible studded fence at the base (asset tiled if loadable, else procedural)
+		buildFenceDecor(CFrame.new(midX, 1, midZ) * CFrame.Angles(0, angle, 0), length, laneFolder)
+	end
+end
+
+----------------------------------------------------------------- zone decorations
+-- Vibrant, STUDDED rock piles that frame each rebirth wall (a tall cliff-like pile at
+-- both wall ends) + per-zone THEME decor (Forest => trees flanking the dig site). Built
+-- once with the lane; pulls colours from Palette and studs via makePart, like everything.
+local FOREST_TREE_ASSET = 17280628013 -- user-supplied low-poly tree model
+
+-- Decorations (trees, rocks, colour jitter) are placed with a FIXED-SEED RNG so the
+-- layout is IDENTICAL on every server start / rebuild instead of re-scattering each run
+-- (the module reloads fresh each server start, so this seed restarts the same sequence).
+-- The build order is deterministic, so the same draws land in the same spots every time.
+local DECOR_SEED = 90210
+local decorRng = Random.new(DECOR_SEED)
+
+local function jitterColor(c: Color3, amt: number): Color3
+	local j = (decorRng:NextNumber() - 0.5) * amt
+	return Color3.new(
+		math.clamp(c.R + j, 0, 1),
+		math.clamp(c.G + j, 0, 1),
+		math.clamp(c.B + j, 0, 1)
+	)
+end
+
+-- a tall, chunky STUDDED stone pile rising from the ground at `base`, framing a wall
+-- end: wider at the bottom, tapering up past the wall top, with a few base boulders.
+local function buildRockPile(base: Vector3, height: number)
+	local levels = 6
+	local y = 1
+	for i = 0, levels - 1 do
+		local t = i / (levels - 1)
+		local w = 24 - t * 13
+		local d = 18 - t * 9
+		local h = (height / levels) * 1.25
+		makePart({
+			Name = "ZoneRock",
+			Size = Vector3.new(w, h, d),
+			Color = jitterColor(Palette.Stone, 0.06),
+			CanCollide = true,
+			CFrame = CFrame.new(base.X + (decorRng:NextNumber() - 0.5) * 6, y + h / 2 - 1, base.Z + (decorRng:NextNumber() - 0.5) * 6)
+				* CFrame.Angles(0, math.rad(decorRng:NextInteger(-20, 20)), 0),
+			Parent = laneFolder,
+		})
+		y = y + h * 0.74
+	end
+	for _ = 1, 3 do
+		local s = decorRng:NextInteger(6, 11)
+		makePart({
+			Name = "ZoneRock",
+			Size = Vector3.new(s, s * 0.8, s * 0.9),
+			Color = jitterColor(Palette.Stone, 0.06),
+			CanCollide = true,
+			CFrame = CFrame.new(base.X + (decorRng:NextNumber() - 0.5) * 18, 1 + s * 0.3, base.Z + (decorRng:NextNumber() - 0.5) * 16)
+				* CFrame.Angles(math.rad(decorRng:NextInteger(0, 35)), math.rad(decorRng:NextInteger(0, 360)), math.rad(decorRng:NextInteger(0, 30))),
+			Parent = laneFolder,
+		})
+	end
+end
+
+-- frame BOTH ends of the rebirth wall at lane-z `wz` with stone piles.
+local function buildWallFrame(wz: number)
+	local x = MapBuilder.DigCenter.X
+	local endX = REBIRTH_WALL.X / 2    -- wall ends at +/-50
+	local pileH = REBIRTH_WALL.Y + 12  -- rise a bit above the 44-tall wall
+	for _, sign in ipairs({ -1, 1 }) do
+		buildRockPile(Vector3.new(x + sign * (endX + 4), 0, wz), pileH)
+	end
+end
+
+------------------------------------------------------------- trees (Forest theme)
+local treeTemplate: Model? = nil
+local treeTried = false
+
+-- a procedural STUDDED pine, the fallback when the asset can't be loaded (it loads in a
+-- published game if the game owner owns the asset, but not for an unauthorized account).
+local function buildProceduralTree(): Model
+	local model = Instance.new("Model")
+	model.Name = "Tree"
+	local trunkH = 7
+	-- FLAT colours (no jitterColor) on purpose: jitter would draw from decorRng, and the
+	-- procedural pine only runs when the asset fails to load — so a flaky LoadAsset would
+	-- change how many draws each tree consumes and DESYNC the whole layout between runs.
+	-- Keeping this path draw-free makes tree placement identical every server start.
+	local trunk = makePart({
+		Name = "Trunk",
+		Size = Vector3.new(2.6, trunkH, 2.6),
+		Color = Palette.TreeTrunk,
+		CanCollide = false,
+		CFrame = CFrame.new(0, trunkH / 2, 0),
+		Parent = model,
+	})
+	model.PrimaryPart = trunk
+	for _, ti in ipairs({
+		{ w = 13, h = 7, y = trunkH + 1 },
+		{ w = 10, h = 6, y = trunkH + 6 },
+		{ w = 6.5, h = 5, y = trunkH + 10.5 },
+	}) do
+		makePart({
+			Name = "Leaves",
+			Size = Vector3.new(ti.w, ti.h, ti.w),
+			Color = Palette.TreeLeaf,
+			CanCollide = false,
+			CFrame = CFrame.new(0, ti.y, 0) * CFrame.Angles(0, math.rad(45), 0),
+			Parent = model,
+		})
+	end
+	return model
+end
+
+-- try once to load the real tree asset; nil => callers use the procedural pine.
+local function getTreeTemplate(): Model?
+	if treeTried then
+		return treeTemplate
+	end
+	treeTried = true
+	local ok, asset = pcall(function()
+		return InsertService:LoadAsset(FOREST_TREE_ASSET)
+	end)
+	if ok and asset then
+		local obj = asset:FindFirstChildWhichIsA("Model") or asset:FindFirstChildWhichIsA("BasePart")
+		if obj then
+			local clone = obj:Clone()
+			local model: Model
+			if clone:IsA("Model") then
+				model = clone
+			else
+				model = Instance.new("Model")
+				clone.Parent = model
+			end
+			for _, d in ipairs(model:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Anchored = true
+					d.CanCollide = false
+					d.CastShadow = false
+				end
+			end
+			treeTemplate = model
+		end
+		asset:Destroy()
+	end
+	return treeTemplate
+end
+
+-- place ONE tree (real asset clone if available, else procedural) standing on the
+-- ground at (x, z), scaled to ~targetH studs tall and randomly spun about Y.
+local function placeTree(x: number, z: number, targetH: number, parent: Instance)
+	local tmpl = getTreeTemplate()
+	local tree: Model = (tmpl and tmpl:Clone()) or buildProceduralTree()
+	tree.Name = "Tree"
+	local _, size0 = tree:GetBoundingBox()
+	if size0.Y > 0.01 then
+		pcall(function() tree:ScaleTo(targetH / size0.Y) end)
+	end
+	-- drop the bounding-box base to the ground (y=1), centered at (x,z)
+	local cf, size = tree:GetBoundingBox()
+	local center = Vector3.new(x, 1 + size.Y / 2, z)
+	tree:PivotTo(tree:GetPivot() + (center - cf.Position))
+	-- spin about the vertical axis through its center
+	local rot = CFrame.new(center) * CFrame.Angles(0, math.rad(decorRng:NextInteger(0, 359)), 0) * CFrame.new(center):Inverse()
+	tree:PivotTo(rot * tree:GetPivot())
+	tree.Parent = parent
+end
+
+-- scatter trees in the LEFT and RIGHT strips flanking a Forest dig site, within the
+-- z range between its walls and clear of the 96-wide dig square. NEVER on the lane.
+local function buildForestTrees(zLo: number, zHi: number)
+	local cx = MapBuilder.DigCenter.X
+	local innerX = SEG_SIZE.X / 2 + 12 -- clear of the dig square + margin
+	local outerX = innerX + 64         -- strip ~64 studs wide
+	local step = 19
+	for _, sign in ipairs({ -1, 1 }) do
+		local gx = innerX
+		while gx <= outerX do
+			local gz = zLo
+			while gz <= zHi do
+				if decorRng:NextNumber() < 0.7 then -- gaps => natural forest edge
+					local x = cx + sign * (gx + (decorRng:NextNumber() - 0.5) * step * 0.8)
+					local z = gz + (decorRng:NextNumber() - 0.5) * step * 0.8
+					placeTree(x, z, decorRng:NextInteger(16, 26) + decorRng:NextNumber(), laneFolder)
+				end
+				gz = gz + step
+			end
+			gx = gx + step
+		end
+	end
+end
+
+-- frame every rebirth wall with rock piles + add per-zone theme decor (trees).
+local function decorateLane()
+	for k = 1, ZoneConfig.MaxZone - 1 do
+		buildWallFrame(LANE_START + (k - 1) * LANE_STEP + LANE_STEP / 2)
+	end
+	for z = 1, ZoneConfig.MaxZone do
+		local data = ZoneConfig.get(z)
+		if data and data.Theme == "Forest" then
+			local pz = LANE_START + (z - 1) * LANE_STEP
+			buildForestTrees(pz - LANE_STEP / 2 + 14, pz + LANE_STEP / 2 - 14)
+		end
 	end
 end
 
@@ -1020,33 +1360,83 @@ local function buildSharedLane()
 
 	-- close the zone1/2 lane sides so the central wall can't simply be walked around
 	buildLaneFences()
+
+	-- frame the walls with studded rock + add per-zone theme decorations (trees)
+	decorateLane()
 end
 
------------------------------------------------------------------ staircase gating
--- Show/hide the floor-2 staircase barrier for `slot`. The gate is BLOCKED (visible,
--- collidable, label shown) when the slot is empty or its occupant owns < 12 plots;
--- OPEN (invisible, non-collidable, label hidden) once the occupant owns >= 12 plots.
-updateStaircase = function(slot: number)
-	local rec = slotStairBarrier[slot]
-	if not rec then
-		return
-	end
+----------------------------------------------------------------- base progression
+-- Drive ALL of a slot's progression-gated visuals from its occupant's profile:
+--   * incubators:  1..IncubatorsUnlocked are REAL; the next is a buyable GHOST; the rest
+--                  are HIDDEN (so you only ever see the next one you can unlock).
+--   * ladder:      HIDDEN until 12 plots; a buyable GHOST at 12 plots; climbable once bought.
+--   * floor 2:     reparented OUT of Workspace (hidden from everyone) until the ladder is
+--                  bought, then reparented back in (visible to the whole lobby).
+-- Empty slots hide everything past the first incubator.
+refreshBaseProgression = function(slot: number)
 	local occupant = slotOccupant[slot]
-	local plots = 0
-	if occupant then
-		local profile = PlayerData.get(occupant)
-		plots = (profile and profile.Plots) or 0
-	end
-	local open = plots >= 12
+	local profile = occupant and PlayerData.get(occupant) or nil
+	local plots = (profile and profile.Plots) or 0
+	local unlocked = (profile and profile.IncubatorsUnlocked) or 0
+	local ladderUnlocked = (profile and profile.LadderUnlocked) or false
+	local cash = (profile and profile.Cash) or 0
 
-	rec.part.CanCollide = not open
-	rec.part.Transparency = open and 1 or 0.5
-	rec.label.Visible = not open
+	-- incubators
+	local incs = slotIncubators[slot]
+	if incs then
+		for i, rec in ipairs(incs) do
+			if not occupant then
+				setIncubatorState(rec, "hidden")
+			elseif i <= unlocked then
+				setIncubatorState(rec, "real")
+			elseif i == unlocked + 1 then
+				local cost = GameConfig.incubatorUnlockCost(unlocked) or 0
+				setIncubatorState(rec, "ghost", cost, cash >= cost)
+			else
+				setIncubatorState(rec, "hidden")
+			end
+		end
+	end
+
+	-- ladder
+	local ladder = slotLadder[slot]
+	if ladder then
+		if not occupant or plots < GameConfig.FloorOnePlots then
+			ladder.truss.Transparency = 1
+			ladder.truss.CanCollide = false
+			ladder.label.Text = ""
+			ladder.click.MaxActivationDistance = 0
+		elseif not ladderUnlocked then
+			ladder.truss.Transparency = 0.4
+			ladder.truss.CanCollide = false -- not climbable until bought
+			ladder.label.Text = ("🔒 Buy Ladder\n$%s"):format(Format.short(GameConfig.LadderCost))
+			ladder.label.TextColor3 = (cash >= GameConfig.LadderCost) and Color3.fromRGB(150, 255, 150) or Color3.fromRGB(255, 200, 150)
+			ladder.click.MaxActivationDistance = 30
+		else
+			ladder.truss.Transparency = 0
+			ladder.truss.CanCollide = true
+			ladder.label.Text = ""
+			ladder.click.MaxActivationDistance = 0
+		end
+	end
+
+	-- floor 2 visibility (reparent in/out of Workspace)
+	local f2 = slotFloor2[slot]
+	if f2 then
+		local show = occupant ~= nil and ladderUnlocked
+		local target = show and slotFolder[slot] or hiddenHolder
+		if f2.Parent ~= target then
+			f2.Parent = target
+		end
+	end
 end
 
--- public alias (lets other managers force a staircase refresh if needed)
-function BaseManager.updateStaircase(slot: number)
-	updateStaircase(slot)
+-- public: force a refresh for a player's slot (called after incubator/ladder purchases)
+function BaseManager.refreshBaseProgression(player: Player)
+	local slot = playerSlot[player]
+	if slot then
+		refreshBaseProgression(slot)
+	end
 end
 
 ----------------------------------------------------------------- build full base structure (once per slot)
@@ -1064,10 +1454,10 @@ local function buildBaseStructure(slot: number)
 	slotPodiums[slot] = {}
 	slotPlates[slot] = {}
 
-	slotIncubator[slot] = buildBuilding(slot, origin, folder)
+	buildBuilding(slot, origin, folder) -- populates slotIncubators / slotLadder / slotFloor2
 	rebuildSlotPodiums(slot, GameConfig.StartingPlots)
 	buildBaseSign(slot, origin, folder)
-	updateStaircase(slot) -- start blocked (slot unoccupied)
+	refreshBaseProgression(slot) -- start with everything past incubator 1 hidden (unoccupied)
 end
 
 ----------------------------------------------------------------- assign / free
@@ -1097,10 +1487,8 @@ function BaseManager.assignBase(player: Player)
 		end
 	end
 
-	BaseManager.updateRebirthGate(player)
-
-	-- open/close the floor-2 staircase based on this occupant's plot count
-	updateStaircase(slot)
+	-- reveal this occupant's incubators / ladder / floor 2 per their saved progression
+	refreshBaseProgression(slot)
 
 	local origin = baseOrigin(slot)
 	local function onCharacter(char: Model)
@@ -1150,21 +1538,11 @@ function BaseManager.freeBase(player: Player)
 	slotOccupant[slot] = nil
 	playerSlot[player] = nil
 
-	-- reset the floor-2 staircase to BLOCKED now that the slot is empty
-	updateStaircase(slot)
-
-	-- no-op gate refresh kept for API compatibility (shared lane handles gating)
-	BaseManager.updateRebirthGate(slot)
+	-- hide incubators (past #1) / ladder / floor 2 now that the slot is empty
+	refreshBaseProgression(slot)
 end
 
 ----------------------------------------------------------------- updaters
--- Rebirth gating is now handled by the ONE shared central lane (buildSharedWall),
--- whose walls never block and rebirth the clicker based on THEIR own CurrentZone.
--- There are no longer any per-slot walls to refresh, so this is a harmless no-op
--- stub kept only because RebirthManager and assignBase still call it.
-function BaseManager.updateRebirthGate(_target: Player | number)
-end
-
 -- keeps the pressure-plate "ready to collect" labels AND each placed brainrot's
 -- "Lv N" billboard in sync across ALL occupied slots (rebirth gating is now handled
 -- by the shared lane, no per-slot walls)
@@ -1219,35 +1597,58 @@ function BaseManager.startGateUpdater()
 						and Color3.fromRGB(150, 255, 150)
 						or Color3.fromRGB(255, 170, 150)
 				end
+
+				-- keep incubator-ghost + ladder Buy affordability tints live for occupants
+				if occupant then
+					refreshBaseProgression(slot)
+				end
 			end
 			task.wait(0.5)
 		end
 	end)
 end
 
-function BaseManager.getOrigin(player: Player): CFrame?
-	local slot = playerSlot[player]
-	if slot then
-		return baseOrigin(slot)
-	end
-	return nil
-end
-
--- World position of the player's incubator (for the "hatch at your incubator"
--- proximity check). Returns nil if the player has no slot / no incubator yet.
-function BaseManager.getIncubatorPosition(player: Player): Vector3?
+-- World positions of the player's UNLOCKED incubators (for the "hatch at an incubator"
+-- proximity check). Returns nil if the player has no slot / no incubators yet.
+function BaseManager.getIncubatorPositions(player: Player): { Vector3 }?
 	local slot = playerSlot[player]
 	if not slot then
 		return nil
 	end
-	local inc = slotIncubator[slot]
-	if not inc then
+	local incs = slotIncubators[slot]
+	local profile = PlayerData.get(player)
+	if not incs or not profile then
 		return nil
 	end
-	return inc.Position
+	local unlocked = profile.IncubatorsUnlocked or 1
+	local positions: { Vector3 } = {}
+	for i = 1, math.min(unlocked, #incs) do
+		positions[#positions + 1] = incs[i].pos
+	end
+	return positions
+end
+
+-- Teleport the player back to their OWN base (the same spot assignBase spawns them at).
+function BaseManager.teleportHome(player: Player): any
+	local slot = playerSlot[player]
+	if not slot then
+		return { ok = false, reason = "You don't have a base yet." }
+	end
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not char or not hrp then
+		return { ok = false, reason = "No character to teleport." }
+	end
+	char:PivotTo(baseOrigin(slot) * CFrame.new(0, 4, 6))
+	return { ok = true }
 end
 
 function BaseManager.init()
+	-- the Home button (client) asks the server to put it back at its base
+	Net.getFunction("TeleportHome").OnServerInvoke = function(player)
+		return BaseManager.teleportHome(player)
+	end
+
 	basesFolder = Workspace:FindFirstChild(BASES_FOLDER_NAME) :: Folder
 	if basesFolder then
 		basesFolder:Destroy()
@@ -1255,6 +1656,16 @@ function BaseManager.init()
 	basesFolder = Instance.new("Folder")
 	basesFolder.Name = BASES_FOLDER_NAME
 	basesFolder.Parent = Workspace
+
+	-- ServerStorage holder for HIDDEN floor-2 structures + locked incubators (out of
+	-- Workspace => invisible to all clients & non-collidable until revealed).
+	local existingHidden = ServerStorage:FindFirstChild("HiddenBaseParts")
+	if existingHidden then
+		existingHidden:Destroy()
+	end
+	hiddenHolder = Instance.new("Folder")
+	hiddenHolder.Name = "HiddenBaseParts"
+	hiddenHolder.Parent = ServerStorage
 
 	-- dedicated folder for the ONE shared central dig lane
 	local existingLane = Workspace:FindFirstChild(DIGLANE_FOLDER_NAME)

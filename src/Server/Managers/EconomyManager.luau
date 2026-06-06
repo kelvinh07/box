@@ -68,21 +68,6 @@ function EconomyManager.collect(player: Player, id: string): number
 	return amount
 end
 
------------------------------------------------------------------ mutators
-function EconomyManager.addCash(player: Player, amount: number)
-	local p = PlayerData.get(player)
-	if not p then return end
-	p.Cash += amount
-	PlayerData.markDirty(player)
-end
-
-function EconomyManager.addGems(player: Player, amount: number)
-	local p = PlayerData.get(player)
-	if not p then return end
-	p.Gems += amount
-	PlayerData.markDirty(player)
-end
-
 ----------------------------------------------------------------- passive income
 -- Cash ACCRUES per brainrot (collected at its pressure plate); gems auto-credit.
 function EconomyManager.startIncomeLoop()
@@ -127,6 +112,10 @@ function EconomyManager.buyPlot(player: Player): any
 	if p.Plots >= GameConfig.MaxPlots then
 		return { ok = false, reason = "Max plots reached." }
 	end
+	-- the 2nd floor (plots 13-24) is gated behind buying the LADDER first
+	if p.Plots >= GameConfig.FloorOnePlots and not p.LadderUnlocked then
+		return { ok = false, reason = "Unlock the ladder to the 2nd floor first!" }
+	end
 	local cost = GameConfig.plotCost(p.Plots)
 	if p.Cash < cost then
 		return { ok = false, reason = "Not enough Cash." }
@@ -134,6 +123,36 @@ function EconomyManager.buyPlot(player: Player): any
 	p.Cash -= cost
 	p.Plots += 1
 	if BaseManager then
+		BaseManager.rebuildPlots(player)
+	end
+	PlayerData.markDirty(player)
+	PlayerData.push(player)
+	return { ok = true }
+end
+
+----------------------------------------------------------------- buy ladder
+-- Spend CASH to unlock the ladder to the 2nd floor. Requires owning all 12 floor-1
+-- plots first. On success the 2nd floor becomes visible/buildable for everyone.
+function EconomyManager.buyLadder(player: Player): any
+	local p = PlayerData.get(player)
+	if not p then
+		return { ok = false, reason = "No profile." }
+	end
+	if p.LadderUnlocked then
+		return { ok = false, reason = "Ladder already unlocked." }
+	end
+	if p.Plots < GameConfig.FloorOnePlots then
+		return { ok = false, reason = "Own all 12 plots first!" }
+	end
+	if p.Cash < GameConfig.LadderCost then
+		return { ok = false, reason = "Not enough Cash." }
+	end
+	p.Cash -= GameConfig.LadderCost
+	p.LadderUnlocked = true
+	-- rebuildPlots (NOT just refreshBaseProgression) so the floor-2 "Buy Plot" ghost
+	-- podium gets created now that the ladder is unlocked — otherwise there's no podium
+	-- to click and players can't buy any 2nd-floor slots. It also reveals floor 2.
+	if BaseManager and BaseManager.rebuildPlots then
 		BaseManager.rebuildPlots(player)
 	end
 	PlayerData.markDirty(player)
@@ -235,6 +254,9 @@ end
 function EconomyManager.init()
 	Net.getFunction("BuyPlot").OnServerInvoke = function(player)
 		return EconomyManager.buyPlot(player)
+	end
+	Net.getFunction("BuyLadder").OnServerInvoke = function(player)
+		return EconomyManager.buyLadder(player)
 	end
 	Net.getFunction("SellBrainrot").OnServerInvoke = function(player, id)
 		return EconomyManager.sellBrainrot(player, id)

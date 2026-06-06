@@ -9,17 +9,60 @@
 --   🔥 Incubator (Gems)  — shortens hatch timers    -> StandType "Incubator"
 --   🍀 Luck      (Gems)  — better dig rarity odds    -> StandType "Luck"
 --
--- Everything is built from anchored Parts (no assets). Idempotent: init() rebuilds
--- the Stands folder from scratch each call.
+-- Each shop is the Creator-Store MODEL asset SHOP_ASSET when it can be loaded (works in a
+-- published game if the game owner owns it), else a procedural booth fallback + bacon
+-- vendor. Idempotent: init() rebuilds the Stands folder from scratch each call.
 
 local Workspace = game:GetService("Workspace")
+local InsertService = game:GetService("InsertService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Palette = require(ReplicatedStorage.Shared.Config.Palette)
+local Surface = require(ReplicatedStorage.Shared.Modules.Surface)
 
 local StandManager = {}
 
 local STANDS_FOLDER_NAME = "Stands"
+
+-- The shop MODEL asset. Loads in a published game if the game owner owns it; otherwise
+-- (e.g. an unauthorized Studio account) buildStand falls back to the procedural booth.
+local SHOP_ASSET = 8644983746
+local SHOP_TARGET_H = 12 -- the asset is scaled so it stands ~this tall
+-- the floating title only shows within this many studs (was always-on at 160)
+local TITLE_MAX_DIST = 32
+
+local shopTemplate: Model? = nil
+local shopTried = false
+local function getShopTemplate(): Model?
+	if shopTried then
+		return shopTemplate
+	end
+	shopTried = true
+	local ok, asset = pcall(function()
+		return InsertService:LoadAsset(SHOP_ASSET)
+	end)
+	if ok and asset then
+		local obj = asset:FindFirstChildWhichIsA("Model") or asset:FindFirstChildWhichIsA("BasePart")
+		if obj then
+			local clone = obj:Clone()
+			local model: Model
+			if clone:IsA("Model") then
+				model = clone
+			else
+				model = Instance.new("Model")
+				clone.Parent = model
+			end
+			for _, d in ipairs(model:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Anchored = true
+				end
+			end
+			shopTemplate = model
+		end
+		asset:Destroy()
+	end
+	return shopTemplate
+end
 
 -- The lobby-center spawn pad sits at world (0, 1.6, -70) (a 14x14 neon square). The
 -- ground part top is Y=1 (ground center 0, size 2). Stands sit ON the ground (Y=1),
@@ -35,16 +78,21 @@ local GROUND_TOP = 1
 -- stand cluster must stay clear of (i.e. greater than) this Z.
 local NEAREST_BASE_FRONT_Z = -150
 
+-- Build an anchored part with the classic studded legoish look (Surface.applyStuds
+-- overlays the real Roblox studs texture on every face). Glow/glass/wood/see-through
+-- parts auto-skip; pass `NoStuds = true` to force-skip (e.g. the NPC avatar limbs).
 local function makePart(props: { [string]: any }): BasePart
 	local p = Instance.new("Part")
 	p.Anchored = true
 	p.CanCollide = true
-	-- legoish look: glossy plastic + classic Roblox studs on top, inlets underneath
-	p.Material = Enum.Material.Plastic
-	p.TopSurface = Enum.SurfaceType.Studs
-	p.BottomSurface = Enum.SurfaceType.Inlet
+	p.Material = Enum.Material.SmoothPlastic
+	local noStuds = props.NoStuds
+	props.NoStuds = nil
 	for k, v in pairs(props) do
 		(p :: any)[k] = v
+	end
+	if not noStuds and Surface.shouldStud(p) then
+		Surface.applyStuds(p)
 	end
 	return p
 end
@@ -68,6 +116,7 @@ local function buildBaconNPC(cf: CFrame, parent: Instance, namePrefix: string): 
 		Size = Vector3.new(2, 2, 1),
 		Color = Palette.BaseFloor, -- vibrant blue-gray "shirt" color
 		CanCollide = false,
+		NoStuds = true, -- avatars stay smooth
 		CFrame = CFrame.new(0, 0, 0),
 		Parent = model,
 	})
@@ -79,6 +128,7 @@ local function buildBaconNPC(cf: CFrame, parent: Instance, namePrefix: string): 
 		Size = Vector3.new(2, 1, 1),
 		Color = SKIN,
 		CanCollide = false,
+		NoStuds = true,
 		CFrame = CFrame.new(0, 1.5, 0),
 		Parent = model,
 	})
@@ -90,6 +140,7 @@ local function buildBaconNPC(cf: CFrame, parent: Instance, namePrefix: string): 
 			Size = Vector3.new(0.18, 0.22, 0.12),
 			Color = Color3.fromRGB(15, 15, 15),
 			CanCollide = false,
+			NoStuds = true,
 			CFrame = head.CFrame * CFrame.new(sx * 0.32, 0.1, 0.52),
 			Parent = model,
 		})
@@ -102,6 +153,7 @@ local function buildBaconNPC(cf: CFrame, parent: Instance, namePrefix: string): 
 			Size = Vector3.new(1, 2, 1),
 			Color = SKIN,
 			CanCollide = false,
+			NoStuds = true,
 			CFrame = CFrame.new(sx * 1.5, 0, 0),
 			Parent = model,
 		})
@@ -110,6 +162,7 @@ local function buildBaconNPC(cf: CFrame, parent: Instance, namePrefix: string): 
 			Size = Vector3.new(1, 2, 1),
 			Color = SKIN,
 			CanCollide = false,
+			NoStuds = true,
 			CFrame = CFrame.new(sx * 0.5, -2, 0),
 			Parent = model,
 		})
@@ -159,66 +212,69 @@ local function buildStand(
 	folder.Name = ("%sStand"):format(standType)
 	folder.Parent = parent
 
-	-- orient the booth so its FRONT (local +Z, the counter/prompt side) faces the
-	-- courtyard; the NPC stands behind it and faces the same way.
+	-- orient so the FRONT (local +Z, the counter/prompt side) faces the courtyard.
 	local facePoint = Vector3.new(groundPos.X, groundPos.Y, groundPos.Z + 20)
 	local base = CFrame.lookAt(groundPos, facePoint)
 
-	-- counter / base block (front of the booth) — the prompt lives here
-	local counter = makePart({
-		Name = "Counter",
-		Size = Vector3.new(8, 4, 2.5),
-		Color = accent,
-		Material = Enum.Material.WoodPlanks,
-		CFrame = base * CFrame.new(0, GROUND_TOP + 2, 0),
-		Parent = folder,
-	})
+	-- the part the ProximityPrompt lives on (the asset's front, or the booth counter)
+	local promptParent: BasePart
 
-	-- back signboard
-	makePart({
-		Name = "Sign",
-		Size = Vector3.new(8.5, 5, 0.6),
-		Color = Palette.BaseFloor,
-		Material = Enum.Material.WoodPlanks,
-		CFrame = base * CFrame.new(0, GROUND_TOP + 7, -3.2),
-		Parent = folder,
-	})
-
-	-- two posts holding the awning
-	for _, sx in ipairs({ -1, 1 }) do
-		makePart({
-			Name = "Post",
-			Size = Vector3.new(0.6, 9, 0.6),
-			Color = Palette.BaseTrim,
-			Material = Enum.Material.Wood,
-			CFrame = base * CFrame.new(sx * 4, GROUND_TOP + 4.5, 0.8),
+	local tmpl = getShopTemplate()
+	if tmpl then
+		-- ASSET shop: scaled to ~SHOP_TARGET_H, stood on the ground at groundPos, facing +Z.
+		local shop = tmpl:Clone()
+		shop.Name = "Shop"
+		local _, s0 = shop:GetBoundingBox()
+		if s0.Y > 0.01 then
+			pcall(function() shop:ScaleTo(SHOP_TARGET_H / s0.Y) end)
+		end
+		shop:PivotTo(base) -- pivot to groundPos, facing +Z
+		local cf, sz = shop:GetBoundingBox()
+		shop:PivotTo(shop:GetPivot() + Vector3.new(0, GROUND_TOP - (cf.Y - sz.Y / 2), 0)) -- drop onto the ground
+		shop.Parent = folder
+		-- invisible interaction block at the front so the E prompt always works
+		promptParent = makePart({
+			Name = "Interact",
+			Size = Vector3.new(7, 5, 2),
+			Transparency = 1,
+			CanCollide = false,
+			NoStuds = true,
+			CFrame = base * CFrame.new(0, GROUND_TOP + 2.5, 3),
 			Parent = folder,
 		})
+	else
+		-- PROCEDURAL fallback booth (counter / sign / posts / awning) + bacon vendor.
+		promptParent = makePart({
+			Name = "Counter",
+			Size = Vector3.new(8, 4, 2.5),
+			Color = accent,
+			Material = Enum.Material.WoodPlanks,
+			CFrame = base * CFrame.new(0, GROUND_TOP + 2, 0),
+			Parent = folder,
+		})
+		makePart({ Name = "Sign", Size = Vector3.new(8.5, 5, 0.6), Color = Palette.BaseFloor, Material = Enum.Material.WoodPlanks, CFrame = base * CFrame.new(0, GROUND_TOP + 7, -3.2), Parent = folder })
+		for _, sx in ipairs({ -1, 1 }) do
+			makePart({ Name = "Post", Size = Vector3.new(0.6, 9, 0.6), Color = Palette.BaseTrim, Material = Enum.Material.Wood, CFrame = base * CFrame.new(sx * 4, GROUND_TOP + 4.5, 0.8), Parent = folder })
+		end
+		makePart({ Name = "Awning", Size = Vector3.new(9.5, 0.5, 5), Color = accent, Material = Enum.Material.Fabric, CFrame = base * CFrame.new(0, GROUND_TOP + 9, 0.6) * CFrame.Angles(math.rad(-18), 0, 0), Parent = folder })
+		local npcPos = Vector3.new(groundPos.X, GROUND_TOP + 3, groundPos.Z - 4)
+		buildBaconNPC(CFrame.lookAt(npcPos, Vector3.new(npcPos.X, npcPos.Y, npcPos.Z + 20)), folder, standType)
 	end
 
-	-- colored awning/top, tilted forward over the counter
-	makePart({
-		Name = "Awning",
-		Size = Vector3.new(9.5, 0.5, 5),
-		Color = accent,
-		Material = Enum.Material.Fabric,
-		CFrame = base * CFrame.new(0, GROUND_TOP + 9, 0.6) * CFrame.Angles(math.rad(-18), 0, 0),
-		Parent = folder,
-	})
-
-	-- floating title above the booth
+	-- floating title above the shop — ONLY visible within TITLE_MAX_DIST studs (close-up)
 	local titlePart = makePart({
 		Name = "Title",
 		Size = Vector3.new(1, 1, 1),
 		Transparency = 1,
 		CanCollide = false,
+		NoStuds = true,
 		CFrame = base * CFrame.new(0, GROUND_TOP + 12, 0),
 		Parent = folder,
 	})
 	local bb = Instance.new("BillboardGui")
 	bb.Size = UDim2.new(0, 190, 0, 44)
 	bb.AlwaysOnTop = true
-	bb.MaxDistance = 160
+	bb.MaxDistance = TITLE_MAX_DIST
 	bb.Parent = titlePart
 	local lbl = Instance.new("TextLabel")
 	lbl.Size = UDim2.fromScale(1, 1)
@@ -230,8 +286,7 @@ local function buildStand(
 	lbl.TextStrokeTransparency = 0
 	lbl.Parent = bb
 
-	-- INSTANT ProximityPrompt on the front counter. The client reads StandType to
-	-- open the matching panel; no server-side handler needed for opening.
+	-- INSTANT ProximityPrompt; the client reads StandType to open the matching panel.
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "OpenPrompt"
 	prompt.ActionText = "Open"
@@ -241,12 +296,7 @@ local function buildStand(
 	prompt.MaxActivationDistance = 10
 	prompt.RequiresLineOfSight = false
 	prompt:SetAttribute("StandType", standType)
-	prompt.Parent = counter
-
-	-- the bacon-hair vendor stands just BEHIND the booth, facing the courtyard (same
-	-- direction). Torso center at Y = ground top + legs(2) + half torso(1) = +3.
-	local npcPos = Vector3.new(groundPos.X, GROUND_TOP + 3, groundPos.Z - 4)
-	buildBaconNPC(CFrame.lookAt(npcPos, Vector3.new(npcPos.X, npcPos.Y, npcPos.Z + 20)), folder, standType)
+	prompt.Parent = promptParent
 end
 
 ----------------------------------------------------------------- init

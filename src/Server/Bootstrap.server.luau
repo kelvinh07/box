@@ -14,7 +14,6 @@ local Managers = script.Parent.Managers
 local PlayerData = require(Managers.PlayerData)
 local MapBuilder = require(Managers.MapBuilder)
 local BaseManager = require(Managers.BaseManager)
-local BrainrotFactory = require(Managers.BrainrotFactory)
 local DiggingManager = require(Managers.DiggingManager)
 local IncubationManager = require(Managers.IncubationManager)
 local EconomyManager = require(Managers.EconomyManager)

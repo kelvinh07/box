@@ -66,7 +66,6 @@ function RebirthManager.rebirth(player: Player): any
 
 	if BaseManager then
 		BaseManager.rebuildPlots(player)
-		BaseManager.updateRebirthGate(player)
 		-- refresh the player's zone-gate group so the wall they just broke down lets
 		-- them through (and they can still freely return to their base in the lobby)
 		BaseManager.applyZoneGate(player)

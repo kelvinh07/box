@@ -1,30 +1,34 @@
 --!strict
 -- Palette
--- The single source of truth for the world's VIBRANT, SATURATED look
--- (Pet-Simulator candy aesthetic). Recolor everything via these Color3s so the
--- whole game stays consistent — never hard-code muted grays again.
+-- The single source of truth for the world's VIBRANT, SATURATED look. Recolor
+-- everything via these Color3s so the whole game stays consistent. The BASES are a
+-- clean SATURATED GRAY (brainrot-base look); the floor is a LIGHTER lime; everything
+-- else stays bright/vivid. Pairs with the semi-pixelated legoish studded surfaces.
 
 local Palette = {
-	Grass     = Color3.fromRGB(124, 226, 62),   -- vivid lime play-ground grass
-	Snow      = Color3.fromRGB(245, 250, 255),  -- bright snow (border top cap)
-	Dirt      = Color3.fromRGB(204, 122, 60),   -- warm vivid brown (border cliffs)
-	DigField  = Color3.fromRGB(122, 72, 38),    -- dig-site first layer (darker than the tan mounds)
-	BaseWall  = Color3.fromRGB(150, 210, 255),  -- vivid sky blue
-	BaseTrim  = Color3.fromRGB(140, 120, 245),  -- vivid violet (pillars/trim/roof/headers/rails/steps)
-	BaseFloor = Color3.fromRGB(100, 110, 175),  -- brighter blue-gray (platform/floor slabs)
+	Grass     = Color3.fromRGB(102, 255, 0),    -- vivid pure lime (#66ff00) play-ground grass
+	Snow      = Color3.fromRGB(248, 252, 255),  -- bright snow (border top cap)
+	Dirt      = Color3.fromRGB(228, 142, 74),   -- vivid warm orange (studded border "walls" / mounds)
+	DigField  = Color3.fromRGB(120, 68, 32),    -- dig-site first layer (darker than the tan mounds)
+	BaseWall  = Color3.fromRGB(162, 168, 182),  -- clean saturated gray (brainrot-base look)
+	BaseTrim  = Color3.fromRGB(96, 102, 120),   -- dark cool gray (pillars/trim/roof/headers/rails/steps)
+	BaseFloor = Color3.fromRGB(120, 126, 144),  -- medium gray (platform/floor slabs)
 	Glass     = Color3.fromRGB(150, 235, 255),  -- bright cyan glass (windows/incubator dome)
-	Wall      = Color3.fromRGB(255, 125, 95),   -- vivid coral (rebirth/zone walls)
-	Plate     = Color3.fromRGB(70, 245, 120),   -- vivid green (pressure plates)
-	Podium    = Color3.fromRGB(95, 80, 170),    -- vivid purple (podiums; keep Neon material)
-	PodiumRim = Color3.fromRGB(120, 230, 255),  -- bright cyan rim
-	Fence     = Color3.fromRGB(170, 105, 55),   -- warm wood fence
-	Incubator = Color3.fromRGB(90, 120, 230),   -- vivid blue incubator body
-	LockRed   = Color3.fromRGB(255, 70, 95),    -- vivid red (locked staircase barrier)
-	Pink      = Color3.fromRGB(255, 90, 175),
-	Cyan      = Color3.fromRGB(70, 205, 255),
-	Lime      = Color3.fromRGB(90, 235, 90),
-	Gold      = Color3.fromRGB(255, 205, 55),
-	Purple    = Color3.fromRGB(180, 100, 255),
+	Wall      = Color3.fromRGB(255, 100, 70),   -- saturated coral (rebirth/zone walls)
+	Plate     = Color3.fromRGB(50, 250, 110),   -- vivid green (pressure plates)
+	Podium    = Color3.fromRGB(135, 80, 230),   -- saturated purple (podiums; keep Neon material)
+	PodiumRim = Color3.fromRGB(110, 235, 255),  -- bright cyan rim
+	Fence     = Color3.fromRGB(176, 100, 48),   -- warm wood fence
+	Stone     = Color3.fromRGB(124, 130, 146),  -- studded rock piles framing the zone walls
+	TreeTrunk = Color3.fromRGB(120, 74, 44),    -- procedural-tree trunk (fallback foliage)
+	TreeLeaf  = Color3.fromRGB(74, 196, 86),    -- procedural-tree foliage (vivid forest green)
+	Incubator = Color3.fromRGB(72, 116, 245),   -- vivid blue incubator body
+	LockRed   = Color3.fromRGB(255, 58, 86),    -- vivid red (locked staircase barrier)
+	Pink      = Color3.fromRGB(255, 80, 175),
+	Cyan      = Color3.fromRGB(55, 205, 255),
+	Lime      = Color3.fromRGB(80, 240, 80),
+	Gold      = Color3.fromRGB(255, 205, 50),
+	Purple    = Color3.fromRGB(185, 95, 255),
 }
 
 return Palette

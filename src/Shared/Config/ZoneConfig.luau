@@ -7,6 +7,9 @@
 --   GemScale      - LEGACY: no longer used by income (see note below)
 --   UnlockRebirths- how many rebirths are required to access this zone
 --   DisplayName / GroundColor for the map.
+--   Theme         - decoration style BaseManager.decorateLane applies around the dig
+--                   site (e.g. "Forest" => trees flanking the lane). Zone 1 ("The
+--                   Burrow") is the home/plot area and has NO theme decorations.
 --
 -- NOTE: income is no longer scaled by zone. CashScale/GemScale are KEPT for
 -- reference but are UNUSED by income — the per-zone economy boost has been
@@ -21,9 +24,11 @@ local ZoneConfig = {}
 
 ZoneConfig.Zones = {
 	[1] = {
-		DisplayName = "Pizzeria Plains",
+		DisplayName = "The Burrow",
 		GroundColor = Color3.fromRGB(95, 200, 90),
 		UnlockRebirths = 0,
+		-- home / plot & player-interaction area: NO theme decorations.
+		Theme = "Burrow",
 		DigOdds = { Common = 60, Uncommon = 25, Rare = 12, Legendary = 3 },
 		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary" },
 		CashScale = 1,
@@ -31,9 +36,11 @@ ZoneConfig.Zones = {
 	},
 
 	[2] = {
-		DisplayName = "Galleria Galattica",
-		GroundColor = Color3.fromRGB(150, 90, 220),
+		DisplayName = "Forest",
+		GroundColor = Color3.fromRGB(80, 180, 75),
 		UnlockRebirths = 1,
+		-- trees flank the lane on both sides of the dig site (BaseManager.decorateLane).
+		Theme = "Forest",
 		DigOdds = { Common = 40, Uncommon = 30, Rare = 22, Legendary = 8 },
 		-- Zone 2 unlocks the exclusive Mythic tier on top of the base tiers.
 		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
@@ -45,6 +52,8 @@ ZoneConfig.Zones = {
 		DisplayName = "Vulcano Tralalero",
 		GroundColor = Color3.fromRGB(240, 80, 60),
 		UnlockRebirths = 2,
+		-- theme decorations TBD (no flanking decor yet).
+		Theme = "Volcano",
 		DigOdds = { Common = 22, Uncommon = 28, Rare = 32, Legendary = 18 },
 		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
 		CashScale = 6,
