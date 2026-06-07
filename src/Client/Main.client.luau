@@ -14,6 +14,8 @@ local UIUtil = require(script.Parent.UIUtil)
 local ClientState = require(script.Parent.ClientState)
 local ClientNet = require(script.Parent.ClientNet)
 local DigSite = require(script.Parent.DigSite)
+local WallBreak = require(script.Parent.WallBreak)
+local GrassChecker = require(script.Parent.GrassChecker)
 
 local UI = script.Parent.UI
 local Effects = require(UI.Effects)
@@ -56,6 +58,8 @@ end
 -- CORE LOOP FIRST: authoritative state + the dig field, before any optional UI.
 startSafe("ClientState", function() ClientState.start() end)
 startSafe("DigSite", function() DigSite.start(screen) end)
+startSafe("WallBreak", function() WallBreak.start() end)
+startSafe("GrassChecker", function() GrassChecker.start() end)
 
 -- persistent HUD
 startSafe("TopBar", function() TopBar.build(screen) end)

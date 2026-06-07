@@ -2,15 +2,17 @@
 -- DiggingManager
 -- SERVER-AUTHORITATIVE digging.
 --
--- Each dig spot (mound) gets its rarity ASSIGNED BY THE SERVER up front, so the
--- client can show rarer eggs differently (color/size/style + longer dig) BEFORE
--- you dig — and can't fake the result.
+-- Each dig spot (mound) gets its rarity ASSIGNED BY THE SERVER up front and KEPT SECRET:
+-- RollEggs returns only the id (NOT the rarity), so the rarity is a true mystery until
+-- you actually dig the egg up — players can't peek at a mound and skip the commons. The
+-- dig time is ZONE-based (not rarity-based), so the rarity also can't be inferred from how
+-- long it takes.
 --
---   RollEggs(count): server rolls `count` luck-weighted rarities, stores them as
---                    pending eggs keyed by a server id, returns {id, rarity} list.
---   Dig(id):         grants the pending egg for `id` (validates proximity +
---                    cooldown + that the id was actually assigned), then hands
---                    back a fresh rarity so the mound can re-style when it regrows.
+--   RollEggs(count): server rolls `count` luck-weighted rarities, stores them (with the
+--                    site's zone) keyed by a server id, returns just the {id} list.
+--   Dig(id):         grants the pending egg for `id` (validates proximity + a ZONE-based
+--                    cooldown + that the id was assigned), and ONLY NOW reveals its rarity
+--                    so the client can show what you dug up; pre-rolls the mound's next egg.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
@@ -28,7 +30,9 @@ local PlayerData = require(script.Parent.PlayerData)
 local DiggingManager = {}
 
 local lastDig: { [Player]: number } = {}
-local pending: { [Player]: { [string]: string } } = {} -- player -> { id -> rarity }
+-- player -> { id -> { rarity, zone } }. The rarity is kept server-side and only revealed
+-- on Dig; the zone is stored so the dig cooldown can be zone-based.
+local pending: { [Player]: { [string]: { rarity: string, zone: number } } } = {}
 local pendingCount: { [Player]: number } = {}
 local idCounter = 0
 
@@ -85,11 +89,11 @@ local function rollRarity(profile: any, effZone: number?): string
 	return Util.weightedPick(luckyOdds(zone.DigOdds, luck)) or "Common"
 end
 
-local function assign(player: Player, rarity: string): string
+local function assign(player: Player, rarity: string, zone: number): string
 	idCounter += 1
 	local id = "e" .. idCounter
 	pending[player] = pending[player] or {}
-	pending[player][id] = rarity
+	pending[player][id] = { rarity = rarity, zone = zone }
 	pendingCount[player] = (pendingCount[player] or 0) + 1
 	return id
 end
@@ -111,8 +115,10 @@ function DiggingManager.rollEggs(player: Player, count: number, zone: number?): 
 			break
 		end
 		local rarity = rollRarity(profile, effZone)
-		local id = assign(player, rarity)
-		table.insert(out, { id = id, rarity = rarity })
+		local id = assign(player, rarity, effZone)
+		-- return ONLY the id (+ zone for the client's dig timing) — never the rarity, so
+		-- the client genuinely cannot reveal/peek it until the egg is dug.
+		table.insert(out, { id = id, zone = effZone })
 	end
 	return { ok = true, eggs = out }
 end
@@ -125,19 +131,21 @@ function DiggingManager.dig(player: Player, id: string): any
 	end
 
 	local bag = pending[player]
-	local rarity = bag and bag[id]
-	if not rarity then
+	local entry = bag and bag[id]
+	if not entry then
 		return { ok = false, reason = "Unknown dig spot." }
 	end
+	local rarity = entry.rarity
+	local zone = entry.zone
 
 	local now = os.clock()
-	-- RARITY-AWARE, shovel-scaled cooldown. The client gates each mound by a
-	-- per-rarity hold time (rarer = longer); the server MUST enforce that same
-	-- longer time or an exploiter could pull Legendaries at the Common rate. We
-	-- mirror the client's holdDuration(rarity, mult) and shave it by CooldownTolerance
-	-- so latency on a fully-held dig never gets falsely rejected.
+	-- ZONE-based, shovel-scaled cooldown. The client gates each mound by the zone's hold
+	-- time (deeper zone = longer, shovel = faster); the server MUST enforce that same time
+	-- so an exploiter can't pull eggs faster than intended. We mirror the client's
+	-- zoneDigDuration(zone, mult) and shave it by CooldownTolerance so latency on a
+	-- fully-held dig never gets falsely rejected.
 	local mult = ShovelConfig.digSpeedMult(profile.ShovelLevel)
-	local cd = ShovelConfig.holdDuration(rarity, mult) * ShovelConfig.CooldownTolerance
+	local cd = ShovelConfig.zoneDigDuration(zone, mult) * ShovelConfig.CooldownTolerance
 	if lastDig[player] and (now - lastDig[player]) < cd then
 		return { ok = false, reason = "Digging too fast!" }
 	end
@@ -168,11 +176,13 @@ function DiggingManager.dig(player: Player, id: string): any
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
 
-	-- pre-assign the mound's NEXT rarity so it can re-style when it regrows
-	local nextRarity = rollRarity(profile)
-	local nextId = assign(player, nextRarity)
+	-- pre-roll the mound's NEXT egg (kept secret again) for the same site zone so the
+	-- regrown mound is another mystery. We return the rarity of the egg JUST dug (the
+	-- reveal) + the next id, but never the next rarity.
+	local nextRarity = rollRarity(profile, zone)
+	local nextId = assign(player, nextRarity, zone)
 
-	return { ok = true, rarity = rarity, nextId = nextId, nextRarity = nextRarity }
+	return { ok = true, rarity = rarity, nextId = nextId, zone = zone }
 end
 
 function DiggingManager.cleanup(player: Player)

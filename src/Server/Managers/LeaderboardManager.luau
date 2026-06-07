@@ -69,7 +69,7 @@ local function buildTombstone(fence: BasePart, titleText: string, accent: Color3
 	body.Name = "TombBody"
 	body.Anchored = true
 	body.CanCollide = true
-	body.Material = Enum.Material.SmoothPlastic
+	body.Material = Enum.Material.Plastic
 	body.Color = Palette.Stone
 	body.Size = Vector3.new(bodyW, bodyH, depth)
 	body.CFrame = faceCF
@@ -83,7 +83,7 @@ local function buildTombstone(fence: BasePart, titleText: string, accent: Color3
 	top.Anchored = true
 	top.CanCollide = true
 	top.Shape = Enum.PartType.Cylinder
-	top.Material = Enum.Material.SmoothPlastic
+	top.Material = Enum.Material.Plastic
 	top.Color = Palette.Stone
 	top.Size = Vector3.new(depth, bodyW, bodyW) -- length = depth, diameter = width
 	top.CFrame = faceCF * CFrame.new(0, bodyH / 2, 0) * CFrame.Angles(0, math.rad(90), 0)
@@ -95,7 +95,7 @@ local function buildTombstone(fence: BasePart, titleText: string, accent: Color3
 	plinth.Name = "TombBase"
 	plinth.Anchored = true
 	plinth.CanCollide = true
-	plinth.Material = Enum.Material.SmoothPlastic
+	plinth.Material = Enum.Material.Plastic
 	plinth.Color = Palette.BaseTrim
 	plinth.Size = Vector3.new(bodyW + 3, 1.5, depth + 2.5)
 	plinth.CFrame = faceCF * CFrame.new(0, -bodyH / 2 + 0.75, 0)

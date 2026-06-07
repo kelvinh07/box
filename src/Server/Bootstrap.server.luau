@@ -21,6 +21,7 @@ local UpgradeManager = require(Managers.UpgradeManager)
 local RebirthManager = require(Managers.RebirthManager)
 local StandManager = require(Managers.StandManager)
 local LeaderboardManager = require(Managers.LeaderboardManager)
+local AdminManager = require(Managers.AdminManager)
 
 -- 1. remotes
 Net.setupServer()
@@ -53,6 +54,8 @@ IncubationManager.init()
 EconomyManager.init()
 UpgradeManager.init()
 RebirthManager.init()
+-- admin chat commands (/test) — the handler only acts for players in AdminConfig
+AdminManager.init()
 
 -- RequestState lets the client pull a fresh snapshot on demand
 Net.getFunction("RequestState").OnServerInvoke = function(player)
@@ -71,17 +74,33 @@ local function applyWalkSpeed(char: Model)
 	h.WalkSpeed = GameConfig.PlayerWalkSpeed
 end
 
+-- the player should NOT cast a shadow. Turn CastShadow off on every body part (and any
+-- accessory/clothing part that loads in afterwards).
+local function removeCharacterShadow(char: Model)
+	local function strip(d: Instance)
+		if d:IsA("BasePart") then
+			d.CastShadow = false
+		end
+	end
+	for _, d in ipairs(char:GetDescendants()) do
+		strip(d)
+	end
+	char.DescendantAdded:Connect(strip)
+end
+
 local function onJoin(player: Player)
 	PlayerData.load(player)
 	BaseManager.assignBase(player)
 
-	-- faster movement + the zone-gate collision group on every spawn (and current char)
+	-- faster movement + the zone-gate collision group + no player shadow, every spawn
 	player.CharacterAdded:Connect(function(char)
 		applyWalkSpeed(char)
+		removeCharacterShadow(char)
 		BaseManager.applyZoneGate(player)
 	end)
 	if player.Character then
 		applyWalkSpeed(player.Character)
+		removeCharacterShadow(player.Character)
 		BaseManager.applyZoneGate(player)
 	end
 

@@ -43,6 +43,12 @@ local function counter(parent: Instance, order: number, emoji: string, color: Co
 		Parent = holder,
 	})
 	value.TextXAlignment = Enum.TextXAlignment.Left
+	-- CAP the font size so a SHORT value (e.g. gems "5.3K") doesn't balloon to fill the box.
+	-- TextScaled still shrinks long values to fit, but never grows past this — so the cash
+	-- and gem counters stay the SAME readable size (room for "999.9" + a K/M/B/... suffix).
+	local sizeCap = Instance.new("UITextSizeConstraint")
+	sizeCap.MaxTextSize = 30
+	sizeCap.Parent = value
 	return value, holder
 end
 

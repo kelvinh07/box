@@ -3,7 +3,10 @@
 -- Shovel upgrades that speed up digging eggs out of the ground.
 --
 -- 9 tiers. Each level raises DigSpeedMult, which SHORTENS the hold-to-dig time:
---   time = max(MinDigTime, stages * PerStage / mult).
+--   time = max(MinDigTime, ZoneDigSeconds[zone] / mult).
+-- DIG TIME IS ZONE-BASED, NOT rarity-based: every egg in a zone takes the SAME base time
+-- to dig (so you can't tell a Common from a Legendary by the dig length), and deeper zones
+-- dig slower — which is exactly what better shovels speed back up.
 -- Bigger mult = faster digging, but the MinDigTime (0.3s) floor guarantees a dig
 -- is NEVER instant even at the top tier. Level 0 means "bare hands" (no shovel)
 -- and digs at the base rate (mult 1.0). Tier 9 is the max shovel.
@@ -31,27 +34,25 @@ ShovelConfig.Levels = {
 	[9] = { Name = "Galaxy",  DigSpeedMult = 3.20, Cost = 2000, Currency = "Gems" },
 }
 
--- Per-rarity hold-to-dig timing (SHARED by the client DigSite render/prompt AND the
--- server DiggingManager cooldown, so rarer eggs take longer to dig on BOTH sides).
--- Rarer eggs take MORE hold stages; hold time = stages * PerStage / DigSpeedMult.
-ShovelConfig.PerStage = 0.32 -- seconds of hold per pop stage
-ShovelConfig.Stages = {
-	Common    = 3, -- ~0.96s @ mult 1
-	Uncommon  = 5, -- ~1.60s
-	Rare      = 7, -- ~2.24s
-	Legendary = 9, -- ~2.88s
-	Mythic    = 9,
-}
--- Server cooldown slack vs the client hold time: the server gates on a slightly
--- SHORTER duration so latency/jitter on a fully-held dig never falsely rejects it.
+-- ZONE-based dig timing (SHARED by the client DigSite prompt/animation AND the server
+-- DiggingManager cooldown). Every egg in a zone digs in the same BASE time regardless of
+-- rarity; deeper zones take longer; the shovel multiplier divides it back down.
+ShovelConfig.PerStage = 0.32 -- seconds per pop "bounce" step the egg rises in (animation only)
+ShovelConfig.ZoneDigSeconds = { [1] = 10, [2] = 13, [3] = 16 } -- base dig seconds per zone (mult 1)
+ShovelConfig.DefaultDigSeconds = 16 -- base dig seconds for zones beyond the table (future)
+-- Server cooldown slack vs the client hold time: the server gates on a slightly SHORTER
+-- duration so latency/jitter on a fully-held dig never falsely rejects it.
 ShovelConfig.CooldownTolerance = 0.85
 
--- Hold-to-dig duration (seconds) for `rarity` at shovel multiplier `mult`. Mirrors
--- the client prompt's HoldDuration. Floored at MinDigTime (0.3s) so digging is never
--- instant. Unknown rarities fall back to Common.
-function ShovelConfig.holdDuration(rarity: string, mult: number): number
-	local stages = ShovelConfig.Stages[rarity] or ShovelConfig.Stages.Common
-	return math.max(ShovelConfig.MinDigTime, (stages * ShovelConfig.PerStage) / mult)
+-- Base seconds to dig ANY egg in `zone` (before the shovel multiplier).
+function ShovelConfig.zoneDigSeconds(zone: number): number
+	return ShovelConfig.ZoneDigSeconds[zone] or ShovelConfig.DefaultDigSeconds
+end
+
+-- Hold-to-dig duration (seconds) for `zone` at shovel multiplier `mult`. Mirrors the
+-- client prompt's HoldDuration. Floored at MinDigTime (0.3s) so digging is never instant.
+function ShovelConfig.zoneDigDuration(zone: number, mult: number): number
+	return math.max(ShovelConfig.MinDigTime, ShovelConfig.zoneDigSeconds(zone) / mult)
 end
 
 -- The level table for a given level (or nil if out of range / level 0).

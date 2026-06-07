@@ -6,7 +6,8 @@
 -- else stays bright/vivid. Pairs with the semi-pixelated legoish studded surfaces.
 
 local Palette = {
-	Grass     = Color3.fromRGB(102, 255, 0),    -- vivid pure lime (#66ff00) play-ground grass
+	Grass         = Color3.fromRGB(101, 217, 26), -- studded grass green (#65D91A); studded via Surface like the rest of the world
+	GrassCheckerB = Color3.fromRGB(84, 179, 18),  -- darker green (#54B312) overlaid as the 6x6 checker on top of the studs
 	Snow      = Color3.fromRGB(248, 252, 255),  -- bright snow (border top cap)
 	Dirt      = Color3.fromRGB(228, 142, 74),   -- vivid warm orange (studded border "walls" / mounds)
 	DigField  = Color3.fromRGB(120, 68, 32),    -- dig-site first layer (darker than the tan mounds)
@@ -14,7 +15,7 @@ local Palette = {
 	BaseTrim  = Color3.fromRGB(96, 102, 120),   -- dark cool gray (pillars/trim/roof/headers/rails/steps)
 	BaseFloor = Color3.fromRGB(120, 126, 144),  -- medium gray (platform/floor slabs)
 	Glass     = Color3.fromRGB(150, 235, 255),  -- bright cyan glass (windows/incubator dome)
-	Wall      = Color3.fromRGB(255, 100, 70),   -- saturated coral (rebirth/zone walls)
+	Wall      = Color3.fromRGB(226, 176, 130),  -- lighter warm brown (rebirth/zone walls; was saturated coral)
 	Plate     = Color3.fromRGB(50, 250, 110),   -- vivid green (pressure plates)
 	Podium    = Color3.fromRGB(135, 80, 230),   -- saturated purple (podiums; keep Neon material)
 	PodiumRim = Color3.fromRGB(110, 235, 255),  -- bright cyan rim

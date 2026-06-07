@@ -16,14 +16,18 @@
 local Surface = {}
 
 -- Classic stud surface texture (opaque grey studs; we drive the colour via Color3).
--- StudsPerTile = 1 == authentic ONE stud per 1x1 stud-unit, like old Roblox parts.
+-- StudsPerTile = how many world studs ONE stud image spans. Bigger = CHUNKIER, more
+-- visible studs (like the reference games). 1 was a too-fine grid that read as flat;
+-- ~3 gives the bold, clearly-bumped studs we want.
 Surface.StudTexture = "rbxassetid://8130710802"
-Surface.StudsPerTile = 1
+Surface.StudsPerTile = 3
 
--- The opaque texture darkens the part colour by roughly its own average brightness, so we
--- pre-brighten the tint. This lands the studded result back on the intended (vivid) palette
--- colour while the baked stud highlights/shadows still read as crisp studs.
-local TINT_BRIGHTEN = 1.16
+-- The opaque grey stud texture is multiplied by this tint (a brightened part colour).
+-- We DELIBERATELY keep this <= 1 now: the old 1.16 over-brightened, clipping the stud
+-- HIGHLIGHTS to white so the studs washed out flat. Tinting a touch BELOW the part
+-- colour keeps the baked stud shadows dark, so the inlets read DEEP and the studs pop
+-- as colored 3D bumps (saturation is preserved — this darkens value, not hue).
+local TINT_BRIGHTEN = 0.8
 
 local FACES = {
 	Enum.NormalId.Top, Enum.NormalId.Bottom,

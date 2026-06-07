@@ -84,6 +84,22 @@ local LANE_SEG_Y = 1.3                       -- dig-area slab center height
 local LANE_START = 0                          -- z of the zone-1 dig site (~lobby center)
 local LANE_STEP = SEG_SIZE.Z + 28             -- center-to-center between dig sites
 
+-- LANE SIDE WALLS (see buildLaneSideWalls): two grass-topped DIRT CLIFFS flanking the
+-- dig lane, running parallel to it (+Z). They TIGHTEN the playable width (the old
+-- map-wide snow border was removed) by sitting just OUTSIDE the forest strip (~x +/-131).
+-- TUNE these to make the lane wider/thinner: lower INNER_X = thinner lane (but don't go
+-- below the forest strip or trees clip through).
+local LANE_SIDE_INNER_X = 142   -- inner face X of each wall (just outside the forest trees)
+local LANE_SIDE_THICK = 20      -- wall thickness in X (semi-thick cliff body)
+local LANE_SIDE_BODY_H = 40     -- dirt/mountain cliff height
+local LANE_SIDE_CAP_H = 7       -- grass cap height on top
+-- NEAR END (z): pushed PAST the front-most end-plot bases (arc tips reach ~z71 at this x)
+-- so the wall never clips into a plot. Raise this if it still overlaps a base.
+local LANE_SIDE_Z_START = 100
+-- The walls pre-extend to frame this MANY zones, not just the current ZoneConfig.MaxZone,
+-- so FUTURE zones are already walled. Bump this (and the ground size) as you add zones.
+local LANE_SIDE_PLANNED_ZONES = 6
+
 ----------------------------------------------------------------- state
 local basesFolder: Folder
 local laneFolder: Folder
@@ -148,7 +164,7 @@ end
 local function makePart(props: { [string]: any }): BasePart
 	local p = Instance.new("Part")
 	p.Anchored = true
-	p.Material = Enum.Material.SmoothPlastic
+	p.Material = Enum.Material.Plastic
 	local noStuds = props.NoStuds
 	props.NoStuds = nil
 	for k, v in pairs(props) do
@@ -339,7 +355,7 @@ local function buildGhostPlot(slot: number, count: number)
 	local ghost = buildPodium(origin * CFrame.new(lx, baseLY + BrainrotFactory.PODIUM_SIZE.Y / 2, lz), folder)
 	ghost.Name = "GhostPodium"
 	ghost.Color = Palette.Wall   -- coral "locked" look, distinct from the vivid-purple real podiums
-	ghost.Material = Enum.Material.SmoothPlastic
+	ghost.Material = Enum.Material.Plastic
 	ghost.Transparency = 0.5
 	ghost.CanCollide = false
 	local rim = ghost:FindFirstChild("Rim")
@@ -735,7 +751,7 @@ local function buildSharedWall(k: number, cf: CFrame, parent: Instance)
 		Name = ("RebirthWall_%d"):format(k),
 		Size = REBIRTH_WALL,
 		Color = Palette.Wall,
-		Material = Enum.Material.SmoothPlastic,
+		Material = Enum.Material.Plastic,
 		Transparency = 0.05,
 		CFrame = cf,
 		Parent = parent,
@@ -808,14 +824,15 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 	local yaw = math.atan2(farDir.X, farDir.Z)
 	local rot = CFrame.Angles(0, yaw, 0)
 
-	-- grass border (same studded look as the central dig site)
-	makePart({
+	-- grass border (studded like the dig site); tagged so the checker overlays its top
+	local zoneBorder = makePart({
 		Name = "ZoneBorder",
 		Size = SEG_SIZE + Vector3.new(12, -0.4, 12),
 		Color = Palette.Grass,
 		CFrame = CFrame.new(pos.X, LANE_SEG_Y - 0.2, pos.Z) * rot,
 		Parent = parent,
 	})
+	CollectionService:AddTag(zoneBorder, "GrassSurface")
 
 	local dirt = makePart({
 		Name = ("Zone%dDig"):format(zone),
@@ -917,17 +934,17 @@ local function buildBuilding(slot: number, origin: CFrame, parent: Instance)
 	end
 
 	-- floor-1 slab
-	makePart({ Name = "Platform", Size = FLOOR, Color = Palette.BaseFloor, Material = Enum.Material.SmoothPlastic, CFrame = origin, Parent = parent })
+	makePart({ Name = "Platform", Size = FLOOR, Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin, Parent = parent })
 
 	-- floor-2 slab (in f2) with a back-center HOLE the ladder climbs through.
 	do
 		local slabMidY = FLOOR2_Y - WALL_T / 2
 		local sideW = FLOOR.X / 2 - LADDER_HOLE_HALF_X
 		for _, sx in ipairs({ -1, 1 }) do
-			makePart({ Name = "Floor2Slab", Size = Vector3.new(sideW, WALL_T, FLOOR.Z), Color = Palette.BaseFloor, Material = Enum.Material.SmoothPlastic, CFrame = origin * CFrame.new(sx * (LADDER_HOLE_HALF_X + sideW / 2), slabMidY, 0), Parent = f2 })
+			makePart({ Name = "Floor2Slab", Size = Vector3.new(sideW, WALL_T, FLOOR.Z), Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin * CFrame.new(sx * (LADDER_HOLE_HALF_X + sideW / 2), slabMidY, 0), Parent = f2 })
 		end
 		local frontLen = LADDER_HOLE_FRONT_LZ - (-FLOOR.Z / 2) -- front edge to the hole
-		makePart({ Name = "Floor2Slab", Size = Vector3.new(2 * LADDER_HOLE_HALF_X, WALL_T, frontLen), Color = Palette.BaseFloor, Material = Enum.Material.SmoothPlastic, CFrame = origin * CFrame.new(0, slabMidY, -FLOOR.Z / 2 + frontLen / 2), Parent = f2 })
+		makePart({ Name = "Floor2Slab", Size = Vector3.new(2 * LADDER_HOLE_HALF_X, WALL_T, frontLen), Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin * CFrame.new(0, slabMidY, -FLOOR.Z / 2 + frontLen / 2), Parent = f2 })
 	end
 
 	-- roof + headers + floor-2 rail (roof, upper header & rail are floor-2)
@@ -1146,6 +1163,45 @@ local function buildLaneFences()
 	end
 end
 
+-- TWO grass-topped DIRT CLIFFS flanking the dig lane, running parallel to it (+Z),
+-- just outside the forest strip. They replace the old map-wide snow border on these
+-- sides and TIGHTEN the playable width. They DON'T block bases: they start past the
+-- front-most bases (the arc tips at ~z+52) and run to just past the last dig site.
+-- Body = studded Dirt "mountain", cap = studded Grass — both via makePart so they get
+-- the classic chunky studs. Collidable, so they actually contain the lane.
+local function buildLaneSideWalls()
+	local cx = MapBuilder.DigCenter.X
+	local zStart = LANE_START + LANE_SIDE_Z_START -- pushed past the front-most bases so it never clips a plot
+	-- extend to frame PLANNED zones (room for FUTURE zones beyond MaxZone), not just MaxZone
+	local zEnd = LANE_START + (LANE_SIDE_PLANNED_ZONES - 1) * LANE_STEP + SEG_SIZE.Z / 2 + 24
+	local length = zEnd - zStart
+	local midZ = (zStart + zEnd) / 2
+	local centerX = LANE_SIDE_INNER_X + LANE_SIDE_THICK / 2
+	for _, sign in ipairs({ -1, 1 }) do
+		local wx = cx + sign * centerX
+		-- dirt/mountain cliff body
+		makePart({
+			Name = "LaneWallDirt",
+			Size = Vector3.new(LANE_SIDE_THICK, LANE_SIDE_BODY_H, length),
+			Color = Palette.Dirt,
+			CanCollide = true,
+			CFrame = CFrame.new(wx, 1 + LANE_SIDE_BODY_H / 2, midZ),
+			Parent = laneFolder,
+		})
+		-- grass cap on top (slightly oversized so it reads as a grassy ledge overhang);
+		-- tagged so the checker overlays its top face (studs stay on the sides)
+		local grassCap = makePart({
+			Name = "LaneWallGrass",
+			Size = Vector3.new(LANE_SIDE_THICK + 4, LANE_SIDE_CAP_H, length + 4),
+			Color = Palette.Grass,
+			CanCollide = true,
+			CFrame = CFrame.new(wx, 1 + LANE_SIDE_BODY_H + LANE_SIDE_CAP_H / 2, midZ),
+			Parent = laneFolder,
+		})
+		CollectionService:AddTag(grassCap, "GrassSurface")
+	end
+end
+
 ----------------------------------------------------------------- zone decorations
 -- Vibrant, STUDDED rock piles that frame each rebirth wall (a tall cliff-like pile at
 -- both wall ends) + per-zone THEME decor (Forest => trees flanking the dig site). Built
@@ -1231,7 +1287,7 @@ local function buildProceduralTree(): Model
 		Name = "Trunk",
 		Size = Vector3.new(2.6, trunkH, 2.6),
 		Color = Palette.TreeTrunk,
-		CanCollide = false,
+		CanCollide = true, -- SOLID: players can't walk through trees
 		CFrame = CFrame.new(0, trunkH / 2, 0),
 		Parent = model,
 	})
@@ -1245,7 +1301,7 @@ local function buildProceduralTree(): Model
 			Name = "Leaves",
 			Size = Vector3.new(ti.w, ti.h, ti.w),
 			Color = Palette.TreeLeaf,
-			CanCollide = false,
+			CanCollide = true, -- SOLID canopy too, so the whole tree blocks the player
 			CFrame = CFrame.new(0, ti.y, 0) * CFrame.Angles(0, math.rad(45), 0),
 			Parent = model,
 		})
@@ -1276,7 +1332,7 @@ local function getTreeTemplate(): Model?
 			for _, d in ipairs(model:GetDescendants()) do
 				if d:IsA("BasePart") then
 					d.Anchored = true
-					d.CanCollide = false
+					d.CanCollide = true -- SOLID: players can't walk through trees
 					d.CastShadow = false
 				end
 			end
@@ -1340,7 +1396,8 @@ local function decorateLane()
 		local data = ZoneConfig.get(z)
 		if data and data.Theme == "Forest" then
 			local pz = LANE_START + (z - 1) * LANE_STEP
-			buildForestTrees(pz - LANE_STEP / 2 + 14, pz + LANE_STEP / 2 - 14)
+			-- bigger FRONT margin (+30) so trees sit well clear of the zone-boundary fence
+			buildForestTrees(pz - LANE_STEP / 2 + 30, pz + LANE_STEP / 2 - 14)
 		end
 	end
 end
@@ -1360,6 +1417,9 @@ local function buildSharedLane()
 
 	-- close the zone1/2 lane sides so the central wall can't simply be walked around
 	buildLaneFences()
+
+	-- grass-topped dirt cliffs flanking the whole lane to tighten the playable width
+	buildLaneSideWalls()
 
 	-- frame the walls with studded rock + add per-zone theme decorations (trees)
 	decorateLane()
@@ -1491,16 +1551,23 @@ function BaseManager.assignBase(player: Player)
 	refreshBaseProgression(slot)
 
 	local origin = baseOrigin(slot)
+	-- spawn spot: inside the front of their (empty) base, facing the lane (the open front)
+	local spawnCF = origin * CFrame.new(0, 4, 6)
 	local function onCharacter(char: Model)
 		local hrp = char:WaitForChild("HumanoidRootPart", 10)
-		if hrp then
-			task.wait(0.2)
-			-- building faces inward; spawn inside facing the lane (the open front)
-			char:PivotTo(origin * CFrame.new(0, 4, 6))
+		if not hrp then
+			return
+		end
+		-- Place them at their base and HOLD it briefly: the engine also places freshly-spawned
+		-- characters at the lobby SpawnLocation, and a single PivotTo can lose that race (leaving
+		-- the player out in the lobby). Re-applying for ~0.4s reliably wins it.
+		for _ = 1, 8 do
+			char:PivotTo(spawnCF)
+			task.wait(0.05)
 		end
 	end
 	if player.Character then
-		onCharacter(player.Character)
+		task.spawn(onCharacter, player.Character)
 	end
 	player.CharacterAdded:Connect(onCharacter)
 

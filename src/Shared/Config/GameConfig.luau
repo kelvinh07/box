@@ -13,9 +13,9 @@ GameConfig.IncomeTickSeconds = 1
 GameConfig.AutoSaveSeconds = 60
 
 -- Dig cooldown (seconds) between successful digs. SUPERSEDED: the server now gates
--- digs with a RARITY-AWARE cooldown derived from ShovelConfig.holdDuration (so rarer
--- eggs take longer on the server too). Kept only as a reference/fallback flat value;
--- it is no longer the active rate limit in DiggingManager.
+-- digs with a ZONE-based cooldown derived from ShovelConfig.zoneDigDuration (deeper zones
+-- dig slower, shovels dig faster; rarity no longer affects dig time). Kept only as a
+-- reference/fallback flat value; it is no longer the active rate limit in DiggingManager.
 GameConfig.DigCooldown = 0.8
 
 -- How fast players walk (applied to the Humanoid on spawn).

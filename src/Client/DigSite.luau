@@ -39,15 +39,20 @@ local PER_STAGE = ShovelConfig.PerStage -- seconds of hold per pop stage (shared
 local EGG_HEIGHT_BASE = 0.6 -- one "x" of egg height; egg height = mult * this
 local PATCH_D = 6.0         -- rough dirt-patch span
 local PATCH_PIECES = 3      -- slabs per patch (overlapping => uneven shape)
--- `stages` (hold-to-dig length) is sourced from ShovelConfig.Stages so the client
--- and the server's rarity-aware cooldown stay in lockstep; `mult` is render-only
--- (egg visual size) and stays local.
-local RARITY = {
-	Common    = { stages = ShovelConfig.Stages.Common,    mult = 8 },
-	Uncommon  = { stages = ShovelConfig.Stages.Uncommon,  mult = 10 },
-	Rare      = { stages = ShovelConfig.Stages.Rare,      mult = 12 },
-	Legendary = { stages = ShovelConfig.Stages.Legendary, mult = 15 },
-	Mythic    = { stages = ShovelConfig.Stages.Mythic,    mult = 15 },
+
+-- MYSTERY: every egg looks the SAME while still buried (a medium, near-black pixel egg)
+-- so its rarity can't be guessed before it's dug up. The real size only appears on reveal.
+local MYSTERY_MULT = 11                       -- medium (between the old common 8 and rare 12)
+local MYSTERY_COLOR = Color3.fromRGB(34, 34, 42)
+
+-- REVEAL: per-rarity egg SIZE used only AFTER the egg is dug up (color comes from
+-- RarityColors). Dig TIME is no longer rarity-based — it's zone-based (ShovelConfig).
+local REVEAL_MULT = {
+	Common    = 8,
+	Uncommon  = 10,
+	Rare      = 12,
+	Legendary = 15,
+	Mythic    = 15,
 }
 
 -- The egg is a PIXEL egg: cube "studs" (voxels) filling an egg ellipsoid.
@@ -78,7 +83,7 @@ local function buildDirt(model: Instance, x: number, topY: number, z: number): B
 		block.CFrame = CFrame.new(x + ox, topY + 0.25, z + oz) * CFrame.Angles(0, math.rad(math.random() * 180), 0)
 		local j = math.random(-12, 12)
 		block.Color = Color3.fromRGB(186 + j, 150 + j, 110 + j)
-		block.Material = Enum.Material.SmoothPlastic
+		block.Material = Enum.Material.Plastic
 		block.Anchored = true
 		block.CanCollide = false
 		Surface.applyStuds(block) -- classic studded dirt patches, same look as the world
@@ -148,7 +153,7 @@ local function buildVoxelEgg(model: Instance, x: number, z: number, centerY: num
 end
 
 ----------------------------------------------------------------- a single dig spot
-local makeDigSpot: (number, number, number, string, string) -> ()
+local makeDigSpot: (number, number, number, string, number) -> () -- (x, topY, z, id, zone)
 
 local function destroyEgg(spot: any)
 	if spot.eggModel then
@@ -172,17 +177,22 @@ end
 local function popEgg(spot: any)
 	spot.popToken += 1
 	local token = spot.popToken
-	-- (re)build the pixel egg at the buried position
+	-- (re)build the MYSTERY pixel egg at the buried position (medium + black)
 	destroyEgg(spot)
 	spot.eggModel, spot.cfv = buildVoxelEgg(spot.model, spot.x, spot.z, spot.eggBuriedCenterY, spot.height, spot.color)
+	-- it rises over the CURRENT zone-based hold duration, so a shovel upgrade shortens the
+	-- whole animation live (recomputed here each time you start digging).
+	local holdDur = ShovelConfig.zoneDigDuration(spot.zone, digSpeedMult)
+	local stages = math.clamp(math.round(holdDur / PER_STAGE), 5, 30)
+	local waitPer = holdDur / stages
 	local info = TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-	for i = 1, spot.stages do
+	for i = 1, stages do
 		if spot.popToken ~= token then
 			return
 		end
-		local centerY = spot.eggBuriedCenterY + (spot.eggOutCenterY - spot.eggBuriedCenterY) * (i / spot.stages)
+		local centerY = spot.eggBuriedCenterY + (spot.eggOutCenterY - spot.eggBuriedCenterY) * (i / stages)
 		placeEgg(spot, centerY, math.rad(i * 40), math.rad((i % 2 == 0) and 8 or -8), info)
-		task.wait(PER_STAGE)
+		task.wait(waitPer)
 	end
 end
 
@@ -211,6 +221,16 @@ local function revealEgg(rarity: string)
 	task.delay(1.2, function() lbl:Destroy() end)
 end
 
+-- Swap the buried MYSTERY egg for the REAL rarity egg (true colour + size) at the popped
+-- position — this is the only moment the rarity is ever shown.
+local function revealRarityEgg(spot: any, rarity: string)
+	spot.color = RarityColors.tier(rarity)
+	spot.height = EGG_HEIGHT_BASE * (REVEAL_MULT[rarity] or REVEAL_MULT.Common)
+	spot.eggOutCenterY = spot.topY + 0.4 + 0.5 * spot.height
+	destroyEgg(spot)
+	spot.eggModel, spot.cfv = buildVoxelEgg(spot.model, spot.x, spot.z, spot.eggOutCenterY, spot.height, spot.color)
+end
+
 local function digSpot(spot: any)
 	-- client-side debounce floor scales with the shovel mult (server still enforces the real cooldown)
 	if os.clock() - lastDig < (0.35 / digSpeedMult) then return end
@@ -222,32 +242,34 @@ local function digSpot(spot: any)
 		return
 	end
 	Sounds.play("Dig")
-	revealEgg(result.rarity)
+	local rarity = result.rarity or "Common"
 
 	spot.active = false
 	spot.popToken += 1
 	if spot.prompt then spot.prompt.Enabled = false end
 
-	-- the egg flies up (collected), then the whole spot is cleared
+	-- REVEAL now (and only now): the egg becomes its real rarity colour + size, then flies up
+	revealRarityEgg(spot, rarity)
+	revealEgg(rarity)
 	placeEgg(spot, spot.eggOutCenterY + 6, 0, 0, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.In))
 
 	local x, topY, z = spot.x, spot.topY, spot.z
-	local nextId, nextRarity = result.nextId, result.nextRarity or "Common"
+	local nextId, zone = result.nextId, spot.zone
 
 	task.delay(0.4, function()
 		if spot.model then spot.model:Destroy() end
 	end)
 	task.delay(REGROW_SECONDS, function()
 		if nextId then
-			makeDigSpot(x, topY, z, nextId, nextRarity)
+			makeDigSpot(x, topY, z, nextId, zone) -- the regrown mound is another mystery
 		end
 	end)
 end
 
-function makeDigSpot(x: number, topY: number, z: number, id: string, rarity: string)
-	local cfg = RARITY[rarity] or RARITY.Common
-	local rarityColor = RarityColors.tier(rarity)
-	local height = EGG_HEIGHT_BASE * cfg.mult
+function makeDigSpot(x: number, topY: number, z: number, id: string, zone: number)
+	-- MYSTERY: same medium, near-black egg for EVERY rarity until it's dug up. The real
+	-- size/colour only appears on reveal (revealRarityEgg).
+	local height = EGG_HEIGHT_BASE * MYSTERY_MULT
 
 	local model = Instance.new("Model")
 	model.Name = "DigSpot"
@@ -262,20 +284,20 @@ function makeDigSpot(x: number, topY: number, z: number, id: string, rarity: str
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText = "Dig"
-	prompt.ObjectText = (rarity ~= "Common") and rarity or ""
+	prompt.ObjectText = "" -- rarity is a MYSTERY until dug up — NO peeking on hover
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
-	-- Hold time is the SINGLE shared formula (floored at 0.3s) so the client prompt
-	-- and the server cooldown agree even at the fastest shovel.
-	prompt.HoldDuration = ShovelConfig.holdDuration(rarity, digSpeedMult)
-	prompt:SetAttribute("Rarity", rarity) -- lets the snapshot listener recompute HoldDuration live
+	-- Hold time is ZONE-based (same for every rarity, deeper zone = longer) and shovel-
+	-- scaled, shared with the server cooldown so they agree even at the fastest shovel.
+	prompt.HoldDuration = ShovelConfig.zoneDigDuration(zone, digSpeedMult)
+	prompt:SetAttribute("Zone", zone) -- lets the snapshot listener recompute HoldDuration live
 	prompt.MaxActivationDistance = 12
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = patch
 
 	local spot = {
-		id = id, rarity = rarity, stages = cfg.stages,
+		id = id, zone = zone,
 		model = model, prompt = prompt,
-		height = height, color = rarityColor,
+		height = height, color = MYSTERY_COLOR,
 		eggModel = nil, cfv = nil,
 		eggBuriedCenterY = eggBuriedCenterY, eggOutCenterY = eggOutCenterY,
 		x = x, topY = topY, z = z,
@@ -351,7 +373,9 @@ local function scatterPatch(patch: Instance)
 	for i, egg in ipairs(result.eggs) do
 		local pos = positions[i]
 		if pos then
-			makeDigSpot(pos.x, topY, pos.z, egg.id, egg.rarity)
+			-- the server returns the egg's effective ZONE (never its rarity); use it for the
+			-- zone-based dig timing so the client matches the server cooldown.
+			makeDigSpot(pos.x, topY, pos.z, egg.id, egg.zone or zone)
 		end
 	end
 end
@@ -370,18 +394,18 @@ function DigSite.start(gui: ScreenGui)
 		scatterPatch(patch)
 	end)
 
-	-- Shovel dig-speed: when the snapshot's DigSpeedMult changes, recompute every
-	-- existing prompt's HoldDuration from its cached "Stages". Only re-iterate when
-	-- the value actually changed so frequent snapshots don't cause churn.
+	-- Shovel dig-speed: when the snapshot's DigSpeedMult changes, recompute every existing
+	-- prompt's HoldDuration from its cached "Zone". Only re-iterate when the value actually
+	-- changed so frequent snapshots don't cause churn.
 	ClientState.onChanged(function(state)
 		local m = (state and state.DigSpeedMult) or 1
 		if m == digSpeedMult then return end
 		digSpeedMult = m
 		for _, inst in ipairs(spotsFolder:GetDescendants()) do
 			if inst:IsA("ProximityPrompt") then
-				local rarityAttr = inst:GetAttribute("Rarity")
-				if rarityAttr then
-					inst.HoldDuration = ShovelConfig.holdDuration(rarityAttr :: string, digSpeedMult)
+				local zoneAttr = inst:GetAttribute("Zone")
+				if zoneAttr then
+					inst.HoldDuration = ShovelConfig.zoneDigDuration(zoneAttr :: number, digSpeedMult)
 				end
 			end
 		end
