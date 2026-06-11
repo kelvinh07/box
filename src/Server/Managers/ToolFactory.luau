@@ -53,11 +53,14 @@ local function weldPartToHandle(part: BasePart, handle: Part)
 	weld.Parent = part
 end
 
--- World-space center of ONLY the model's VISIBLE geometry. The imported brainrot models carry an
+-- World-space CENTER of ONLY the model's VISIBLE geometry. The imported brainrot models carry an
 -- oversized INVISIBLE RootPart (their PrimaryPart) that is OFF-center from the rendered animal, so
--- pivoting on it makes a full-size (~10-stud) model hang/clip well off the hand. We measure the
--- real geometry instead (matches BrainrotFactory.visibleBounds) so we can center the visible animal
--- on the handle. Returns nil if nothing visible (caller falls back to the pivot).
+-- pivoting on it makes a model hang/clip well off the hand. We measure the real geometry instead
+-- (matches BrainrotFactory.visibleBounds, skipping the RootPart + transparent VFX) and return the
+-- CENTER of that AABB so the held model can be CENTRED on the hand: at ~character size it then sits
+-- at the avatar's body height (its bottom stays above the feet, so it never clips the floor, and it
+-- doesn't float up above the head the way a bottom-at-hand offset did). Returns nil if nothing
+-- visible (caller falls back to the pivot).
 local function visibleCenter(model: Model): Vector3?
 	local min: Vector3?, max: Vector3? = nil, nil
 	for _, d in ipairs(model:GetDescendants()) do
@@ -81,17 +84,20 @@ local function visibleCenter(model: Model): Vector3?
 	if not min or not max then
 		return nil
 	end
-	return (min + max) / 2
+	-- center of the visible AABB (X/Y/Z midpoints)
+	return Vector3.new((min.X + max.X) / 2, (min.Y + max.Y) / 2, (min.Z + max.Z) / 2)
 end
 
 -- Weld every BasePart of `model` to `handle`, after making them unanchored/massless/non-collide.
--- The model is moved so its VISIBLE-geometry center sits on the handle (NOT its off-center invisible
--- RootPart pivot) so a full-size model reads in-hand instead of jutting through the avatar/camera.
+-- The model is moved so its VISIBLE-geometry CENTER sits at the handle position (NOT its off-center
+-- invisible RootPart pivot). At ~average-character size the centred model holds at the avatar's body
+-- height — its bottom stays above the feet (no floor clip) and it doesn't tower above the head the
+-- way a bottom-at-hand offset did.
 local function weldModelToHandle(model: Model, handle: Part)
 	local center = visibleCenter(model)
 	if center then
 		-- translate the whole model so its visible center lands on the handle position (a pure
-		-- world-space shift by (handle.Position - center); orientation is preserved)
+		-- world-space shift; orientation is preserved).
 		local delta = handle.Position - center
 		model:PivotTo(model:GetPivot() + delta)
 	else

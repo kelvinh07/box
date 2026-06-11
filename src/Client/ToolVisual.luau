@@ -32,11 +32,14 @@ local DIR = Vector3.new(0.35, 0.25, 1).Unit      -- look direction (slightly abo
 local FILL = 0.85                                -- fraction of the viewport the model should fill
 
 ----------------------------------------------------------------- bounds
--- world-space (center, size) of an instance's VISIBLE BaseParts
+-- world-space (center, size) of an instance's VISIBLE, REAL geometry. Mirrors
+-- BrainrotFactory.visibleBounds: the imported brainrot models carry an OVERSIZED invisible
+-- "RootPart" (the PrimaryPart) plus near-transparent VFX parts; measuring those wrecks the
+-- framing, so we SKIP any BasePart named "RootPart" and anything with Transparency >= 0.95.
 local function computeBounds(inst: Instance): (Vector3, Vector3)
 	local minv: Vector3?, maxv: Vector3? = nil, nil
 	for _, d in ipairs(inst:GetDescendants()) do
-		if d:IsA("BasePart") and d.Transparency < 1 then
+		if d:IsA("BasePart") and d.Name ~= "RootPart" and d.Transparency < 0.95 then
 			local cf, h = d.CFrame, d.Size / 2
 			for sx = -1, 1, 2 do
 				for sy = -1, 1, 2 do
@@ -54,7 +57,7 @@ local function computeBounds(inst: Instance): (Vector3, Vector3)
 		end
 	end
 	if not minv or not maxv then
-		return Vector3.zero, Vector3.one
+		return Vector3.zero, Vector3.zero
 	end
 	return (minv + maxv) / 2, (maxv - minv)
 end
@@ -133,9 +136,17 @@ local function findBrainrotSource(id: string): Instance?
 	return nil
 end
 
--- Render a brainrot by id into the viewport. Returns false if no source model is replicated
--- (caller shows a colored swatch fallback instead).
+-- Render a brainrot by id into the viewport. Returns false (so the caller / mountBrainrot can
+-- retry) when there is nothing real to show yet — either no source model is replicated, or the
+-- cloned source has NO visible geometry (its parts haven't replicated in). On false it leaves the
+-- viewport CLEAN (no stale Camera) so a later retry actually re-runs the framing.
 function ToolVisual.renderBrainrotById(vf: ViewportFrame, id: string): boolean
+	-- clear any prior attempt (old Camera + holder) so repeated attempts don't stack
+	for _, c in ipairs(vf:GetChildren()) do
+		c:Destroy()
+	end
+	vf.CurrentCamera = nil
+
 	local src = findBrainrotSource(id)
 	if not src then
 		return false
@@ -153,8 +164,37 @@ function ToolVisual.renderBrainrotById(vf: ViewportFrame, id: string): boolean
 		end
 		clone:Destroy()
 	end
+
+	-- guard against an EMPTY clone (parts not replicated yet): measure the REAL visible geometry
+	-- (RootPart + transparent VFX excluded) and bail with NO camera so the retry loop fires.
+	local _, size = computeBounds(holder)
+	if math.max(size.X, size.Y, size.Z) <= 0 then
+		holder:Destroy()
+		return false
+	end
+
 	ToolVisual.frame(vf, holder)
 	return true
+end
+
+-- Fire-and-forget retry wrapper: render the brainrot NOW; if it can't yet (source / geometry not
+-- replicated), spin a short retry loop into the SAME viewport (it never creates a new slot). This
+-- absorbs slow replication — by the time the parts arrive a retry succeeds and stops the loop.
+function ToolVisual.mountBrainrot(vf: ViewportFrame, id: string)
+	if ToolVisual.renderBrainrotById(vf, id) then
+		return
+	end
+	task.spawn(function()
+		for _ = 1, 12 do
+			task.wait(0.25)
+			if vf.Parent == nil then
+				return
+			end
+			if ToolVisual.renderBrainrotById(vf, id) then
+				return
+			end
+		end
+	end)
 end
 
 ----------------------------------------------------------------- dispatch

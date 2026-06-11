@@ -21,6 +21,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 local Shared = ReplicatedStorage.Shared
 
 local EggConfig = require(Shared.Config.EggConfig)
@@ -45,10 +46,14 @@ local TIER_RANK = { Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5,
 
 local Z = 30 -- above the modals (20) so the overlay always wins
 
+-- the default Roblox "open backpack/inventory" key (grave / backtick) toggles this overlay too,
+-- so muscle memory works. One-line change if Roblox ever moves the bind.
+local INVENTORY_KEY = Enum.KeyCode.Backquote
+
 -- viewport rendering lives in the shared ToolVisual module (full-detail egg + tightly-framed
 -- brainrot model) so the hotbar + this overlay never duplicate the bounds/camera maths.
 local renderEgg = ToolVisual.renderEgg
-local renderBrainrot = ToolVisual.renderBrainrotById
+local mountBrainrot = ToolVisual.mountBrainrot
 
 ----------------------------------------------------------------- card builders
 local CELL = Vector2.new(140, 178)
@@ -126,22 +131,32 @@ local function makeBrainrotCard(parent: Instance, entry: any, rebirths: number, 
 	})
 	name.ZIndex = Z + 2
 
+	-- a variant-colored swatch sits UNDER the viewport so the card is never blank while the model
+	-- replicates in; it's hidden the moment the real model renders (the viewport gets a Camera).
+	local swatch = UIUtil.frame({
+		Size = UDim2.new(0, 70, 0, 70),
+		Position = UDim2.new(0.5, 0, 0, 36),
+		AnchorPoint = Vector2.new(0.5, 0),
+		BackgroundColor3 = (BrainrotConfig.get(entry.base) and BrainrotConfig.get(entry.base).Color) or variantColor,
+		Parent = card,
+	})
+	swatch.ZIndex = Z + 1
+	UIUtil.corner(swatch, 35)
+	UIUtil.stroke(swatch, 3, variantColor)
+
 	local vf = newViewport(card)
 	vf.Size = UDim2.new(1, -16, 0, 92)
 	vf.Position = UDim2.new(0, 8, 0, 32)
-	if not renderBrainrot(vf, entry.id) then
-		-- fallback: a variant-colored swatch if the model isn't replicated yet
-		vf:Destroy()
-		local swatch = UIUtil.frame({
-			Size = UDim2.new(0, 70, 0, 70),
-			Position = UDim2.new(0.5, 0, 0, 36),
-			AnchorPoint = Vector2.new(0.5, 0),
-			BackgroundColor3 = (BrainrotConfig.get(entry.base) and BrainrotConfig.get(entry.base).Color) or variantColor,
-			Parent = card,
-		})
-		swatch.ZIndex = Z + 2
-		UIUtil.corner(swatch, 35)
-		UIUtil.stroke(swatch, 3, variantColor)
+	-- mountBrainrot renders now AND retries into this same viewport until the model replicates.
+	mountBrainrot(vf, entry.id)
+	-- hide the placeholder once a real render lands (renderBrainrotById parents a Camera on success)
+	vf.ChildAdded:Connect(function(c)
+		if c:IsA("Camera") then
+			swatch.Visible = false
+		end
+	end)
+	if vf:FindFirstChildOfClass("Camera") then
+		swatch.Visible = false
 	end
 
 	local cash = select(1, BrainrotMath.income(entry, rebirths))
@@ -507,6 +522,17 @@ function Inventory.build(gui: ScreenGui)
 	icon.Parent = btn
 	btn.MouseButton1Click:Connect(function()
 		api.toggle("All")
+	end)
+
+	-- the default Roblox backpack keybind (Backquote) toggles the overlay too. Ignore the input
+	-- when gameProcessedEvent is set so it never fires while typing in the search box / chat.
+	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+		if gameProcessed then
+			return
+		end
+		if input.KeyCode == INVENTORY_KEY then
+			api.toggle("All")
+		end
 	end)
 
 	return api

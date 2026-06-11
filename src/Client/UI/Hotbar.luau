@@ -156,15 +156,9 @@ local function buildSlot(tool: Tool): Slot
 		rarity = tostring(tool:GetAttribute("Rarity") or "Common")
 		ToolVisual.renderEgg(vf, rarity :: string)
 	elseif kind == "Brainrot" then
-		if not ToolVisual.renderBrainrotById(vf, tostring(tool:GetAttribute("BrainrotId"))) then
-			-- model not replicated yet: leave the (transparent) viewport empty; a later refresh
-			-- won't rebuild it, so retry once shortly after the tool appears.
-			task.delay(0.5, function()
-				if vf.Parent and not vf:FindFirstChildOfClass("Camera") then
-					ToolVisual.renderBrainrotById(vf, tostring(tool:GetAttribute("BrainrotId")))
-				end
-			end)
-		end
+		-- mountBrainrot renders now AND retries into this same viewport until the model replicates,
+		-- so a slow-to-arrive model still fills the slot instead of staying blank.
+		ToolVisual.mountBrainrot(vf, tostring(tool:GetAttribute("BrainrotId")))
 	end
 
 	return { tool = tool, frame = frame, stroke = stroke, badge = badge, rarity = rarity }
