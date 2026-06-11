@@ -35,7 +35,7 @@ local SHOP_MODEL_NAME = "ShopModel" -- imported model we pull the vendor CHARACT
 -- Footprint clears the side plots (nearest inner-plot corner ~x74) and the lobby wall behind
 -- (~z-235). Floor is a raised plank platform; the structure is otherwise OPEN (airflow).
 local PAV_CX = 0
-local PAV_CZ = -175 -- pavilion center Z (pushed back near the terrace/lobby wall ~z-236; the tall eave keeps the back roof prow above the wall top so it tucks right up to it)
+local PAV_CZ = -195 -- pavilion center Z: pushed back toward the lobby-wall TERRACE (its near-centre front face is ~z-275) while keeping a courtyard gap — the shop's back extent lands at ~z-235.
 local PAV_HALF_W = 44 -- floor half-width (X) -> 88 wide (bigger shop — more width)
 local PAV_HALF_L = 36 -- floor half-length (Z) -> 72 long (bigger shop — a bit more length)
 local FLOOR_TOP = 2 -- raised floor TOP Y (1-stud step up from the ground)
