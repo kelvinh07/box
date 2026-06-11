@@ -27,6 +27,7 @@ local Util = require(Shared.Modules.Util)
 local Net = require(Shared.Modules.Net)
 
 local PlayerData = require(script.Parent.PlayerData)
+local InventoryManager = require(script.Parent.InventoryManager)
 
 local DiggingManager = {}
 
@@ -176,6 +177,9 @@ function DiggingManager.dig(player: Player, id: string): any
 
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
+
+	-- give the player the egg Tool (or update its count) in their Backpack.
+	InventoryManager.sync(player)
 
 	-- pre-roll the mound's NEXT egg (kept secret again) for the same site zone so the
 	-- regrown mound is another mystery. We return the rarity of the egg JUST dug (the

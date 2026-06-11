@@ -347,6 +347,74 @@ function BrainrotFactory.build(entry: any, rebirthCount: number): Model
 	return model
 end
 
+----------------------------------------------------------------- handheld (Tool)
+-- The display target for a HANDHELD model's VISIBLE longest axis after scaling. Tools are held
+-- in the hand, so the model must be SMALL (a few studs) — much smaller than the podium display.
+local HANDHELD_MAX_AXIS = 3.5
+
+-- Like normalizeSize, but scales the VISIBLE longest axis to HANDHELD_MAX_AXIS (no `scale`
+-- multiplier — every brainrot fits the same small hand budget). Manual per-part scaling for
+-- the same reason build() avoids Model:ScaleTo (rigged models break under ScaleTo).
+local function normalizeHandheld(model: Model)
+	local center, size = visibleBounds(model)
+	local maxAxis = math.max(size.X, size.Y, size.Z)
+	if maxAxis <= 0 then return end
+	local factor = HANDHELD_MAX_AXIS / maxAxis
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local pos = d.Position
+			local rot = d.CFrame - pos -- rotation-only CFrame
+			d.Size *= factor
+			d.CFrame = rot + (center + (pos - center) * factor)
+			local mesh = d:FindFirstChildWhichIsA("DataModelMesh") -- SpecialMesh/BlockMesh/etc.
+			if mesh then
+				mesh.Scale *= factor
+				mesh.Offset *= factor
+			end
+		elseif d:IsA("Attachment") then
+			d.Position *= factor
+		end
+	end
+end
+
+-- Build a SMALL, hand-held version of a brainrot (for a Tool the player carries in their
+-- inventory/Backpack). Same recolor language as build(), but WITHOUT the podium glow or the
+-- info billboard, scaled tiny, and with every part UNANCHORED + MASSLESS + non-colliding so it
+-- can be welded to a Tool Handle and held without dragging the character around.
+function BrainrotFactory.buildHandheld(entry: any): Model
+	local base = BrainrotConfig.get(entry.base)
+	local color = base and base.Color or Color3.fromRGB(200, 200, 200)
+
+	-- 1) the imported animal model; else 2) a Creator Store asset; else 3) procedural placeholder.
+	local model: Model? = cloneRealModel(entry.base)
+	if not model then
+		local assetId = AssetConfig.brainrotAssetId(entry.base)
+		if assetId then
+			model = tryInsert(assetId, entry.base)
+		end
+		if not model then
+			model = buildPlaceholder(entry.base, color, 1)
+		end
+	end
+
+	recolorVariant(model, entry.variant) -- Gold/Diamond/Galaxy recolor (Normal keeps real textures)
+	normalizeHandheld(model)
+
+	-- a held tool must be free-moving: unanchor, make weightless, no collisions.
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = false
+			d.Massless = true
+			d.CanCollide = false
+		end
+	end
+	if not model.PrimaryPart then
+		model.PrimaryPart = (model:FindFirstChild("RootPart") :: BasePart?) or model:FindFirstChildWhichIsA("BasePart", true)
+	end
+	model:SetAttribute("BrainrotId", entry.id)
+	return model
+end
+
 BrainrotFactory.PODIUM_SIZE = PODIUM_SIZE
 
 return BrainrotFactory

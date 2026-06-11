@@ -16,16 +16,16 @@ local ClientNet = require(script.Parent.ClientNet)
 local DigSite = require(script.Parent.DigSite)
 local WallBreak = require(script.Parent.WallBreak)
 local GrassChecker = require(script.Parent.GrassChecker)
+local InventoryClient = require(script.Parent.InventoryClient)
 
 local UI = script.Parent.UI
 local Effects = require(UI.Effects)
 local TopBar = require(UI.TopBar)
 local HUD = require(UI.HUD)
-local Backpack = require(UI.Backpack)
+local Inventory = require(UI.Inventory)
 local HomeButton = require(UI.HomeButton)
 local ShopsButton = require(UI.ShopsButton)
 local Stands = require(UI.Stands)
-local Collection = require(UI.Collection)
 local CollectionButton = require(UI.CollectionButton)
 local RebirthButton = require(UI.RebirthButton)
 local Rebirth = require(UI.Rebirth)
@@ -66,18 +66,21 @@ startSafe("GrassChecker", function() GrassChecker.start() end)
 -- persistent HUD
 startSafe("TopBar", function() TopBar.build(screen) end)
 startSafe("HUD", function() HUD.build(screen) end)
-startSafe("Backpack", function() Backpack.build(screen) end)
+-- the custom inventory overlay (replaces the old egg Backpack panel + Collection modal); it
+-- builds its own 🎒 button. InventoryClient toggles the world placement prompts by equip.
+local inventory
+startSafe("Inventory", function() inventory = Inventory.build(screen) end)
+startSafe("InventoryClient", function() InventoryClient.start() end)
 startSafe("HomeButton", function() HomeButton.build(screen) end)
 startSafe("ShopsButton", function() ShopsButton.build(screen) end)
 
 -- modal panels
-local collection, rebirth
-startSafe("Collection", function() collection = Collection.build(screen) end)
+local rebirth
 startSafe("Rebirth", function() rebirth = Rebirth.build(screen) end)
 
--- left-side Collection icon (next to the 🎒 Backpack button) toggles the Collection modal
+-- left-side Collection icon (next to the 🎒 button) opens the inventory overlay on Brainrots
 startSafe("CollectionButton", function()
-	CollectionButton.build(screen, function() if collection then collection.toggle() end end)
+	CollectionButton.build(screen, function() if inventory then inventory.open("Brainrots") end end)
 end)
 
 -- the three stand upgrade panels (opened by walking up to a stand, not the SideNav)

@@ -52,7 +52,10 @@ local function defaultProfile()
 		Incubators = {}, -- sparse array [1..MaxIncubators]
 		-- the 2nd-floor LADDER is a paid unlock (after owning all 12 floor-1 plots).
 		LadderUnlocked = false,
-		Collection = {},  -- array of { id, base, tier, variant, level }
+		-- array of { id, base, tier, variant, level, placed, podium }.
+		-- placed=true => sits on a base podium and EARNS income; placed=false => held
+		-- in the inventory/Backpack (a Tool). podium = 1..Plots index when placed, nil otherwise.
+		Collection = {},
 		Version = 1,
 	}
 end
@@ -100,6 +103,33 @@ local function reconcile(profile: any)
 	-- Every brainrot carries a level (1..10); old entries default to 1.
 	for _, entry in ipairs(profile.Collection) do
 		entry.level = entry.level or 1
+	end
+	-- PLACED/PODIUM migration: legacy saves had no placed/podium field — back then
+	-- every owned brainrot sat on a podium. Treat such entries as placed and assign a
+	-- running podium index (1,2,3,... in array order). Clamp to Plots so we never
+	-- assign a podium beyond the player's plot count — any overflow stays unplaced.
+	local needsMigration = false
+	for _, entry in ipairs(profile.Collection) do
+		if entry.placed == nil then
+			needsMigration = true
+			break
+		end
+	end
+	if needsMigration then
+		local nextPodium = 1
+		local maxPlots = profile.Plots or 0
+		for _, entry in ipairs(profile.Collection) do
+			if entry.placed == nil then
+				if nextPodium <= maxPlots then
+					entry.placed = true
+					entry.podium = nextPodium
+					nextPodium += 1
+				else
+					entry.placed = false
+					entry.podium = nil
+				end
+			end
+		end
 	end
 	-- The income/level-cost multipliers are derived from Rebirths. Reconcile any
 	-- missing/stale derived value straight from the rebirth count.
@@ -265,6 +295,15 @@ function PlayerData.snapshot(player: Player): any?
 		eggCount += (p.Eggs[r] or 0)
 	end
 
+	-- how many owned brainrots are currently PLACED on a podium (earning income).
+	-- Plots caps this, not how many you can OWN (the rest sit in the inventory).
+	local placedCount = 0
+	for _, entry in ipairs(p.Collection) do
+		if entry.placed then
+			placedCount += 1
+		end
+	end
+
 	return {
 		Cash = p.Cash,
 		Gems = p.Gems,
@@ -294,7 +333,8 @@ function PlayerData.snapshot(player: Player): any?
 		LadderUnlocked = p.LadderUnlocked,
 		LadderCost = GameConfig.LadderCost,
 		FloorOnePlots = GameConfig.FloorOnePlots,
-		Collection = p.Collection,  -- each entry carries .level
+		Collection = p.Collection,  -- each entry carries .level + .placed + .podium
+		PlacedCount = placedCount,   -- # of brainrots on podiums (income earners); Plots caps this
 		-- derived
 		TotalLuck = UpgradeConfig.totalLuck(p.LuckLevel, p.Rebirths),
 		IncubatorReduction = UpgradeConfig.incubatorReduction(p.IncubatorLevel),

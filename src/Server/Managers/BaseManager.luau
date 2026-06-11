@@ -19,6 +19,7 @@ local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local CollectionService = game:GetService("CollectionService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 local PhysicsService = game:GetService("PhysicsService")
 local InsertService = game:GetService("InsertService")
 local ServerStorage = game:GetService("ServerStorage")
@@ -44,6 +45,9 @@ local EconomyManager = require(script.Parent.EconomyManager)
 -- IncubationManager uses BaseManager via INJECTION (no top-level require of BaseManager),
 -- so requiring it here for the ghost-incubator Buy click does NOT create a cycle.
 local IncubationManager = require(script.Parent.IncubationManager)
+-- InventoryManager has NO require of BaseManager (it only reads PlayerData + the factories),
+-- so requiring it here for the placement-prompt router does NOT create a cycle.
+local InventoryManager = require(script.Parent.InventoryManager)
 
 local BaseManager = {}
 
@@ -558,6 +562,30 @@ local function buildLevelButton(slot: number, idx: number, podium: BasePart, inw
 end
 
 -- (re)build the podium grid + plates for a given slot's plot count
+-- Tag carried by every inventory placement prompt (podium + incubator). The client
+-- (InventoryClient) finds them by this tag to toggle Enabled/ActionText by the equipped
+-- tool; the server prompt router (BaseManager.init) validates + routes the action.
+local INV_PROMPT_TAG = "InvPrompt"
+
+-- Attach the "place / swap / remove brainrot" ProximityPrompt to a podium. Starts DISABLED:
+-- the client enables it contextually (holding a brainrot, or an occupied podium for Remove).
+local function attachPodiumPrompt(slot: number, idx: number, podium: BasePart)
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "PodiumPrompt"
+	prompt.ActionText = "Place"
+	prompt.ObjectText = "Brainrot Slot"
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.RequiresLineOfSight = false
+	prompt.MaxActivationDistance = 16
+	prompt.Enabled = false
+	prompt:SetAttribute("PromptKind", "Podium")
+	prompt:SetAttribute("Slot", slot)
+	prompt:SetAttribute("PodiumIndex", idx)
+	prompt:SetAttribute("Occupied", false)
+	prompt.Parent = podium
+	CollectionService:AddTag(prompt, INV_PROMPT_TAG)
+end
+
 local function rebuildSlotPodiums(slot: number, count: number)
 	local folder = slotFolder[slot]
 	if not folder then
@@ -595,6 +623,8 @@ local function rebuildSlotPodiums(slot: number, count: number)
 		buildPlate(slot, i, origin * CFrame.new(lx - side * 7, baseLY + PLATE.Y / 2, lz), folder)
 		-- a "LEVEL UP" button on the podium's inward (player-facing) edge
 		buildLevelButton(slot, i, podium, origin:VectorToWorldSpace(Vector3.new(-side, 0, 0)).Unit)
+		-- the E-prompt to place / swap / remove a brainrot on this podium
+		attachPodiumPrompt(slot, i, podium)
 	end
 
 	-- rebuild the GHOST next-slot Buy podium: destroy any prior one FIRST, then show
@@ -650,8 +680,10 @@ local function visibleAABB(model: Model): (Vector3, Vector3)
 	return (min + max) / 2, (max - min)
 end
 
--- place a single brainrot model onto the next free podium for `slot`
-local function placeBrainrotForSlot(slot: number, player: Player, entry: any)
+-- place a single brainrot model onto a podium for `slot`. `forcedIndex` pins it to a
+-- SPECIFIC podium (used when placing/loading a brainrot at its saved `entry.podium`);
+-- when nil it falls back to the next free podium.
+local function placeBrainrotForSlot(slot: number, player: Player, entry: any, forcedIndex: number?)
 	local profile = PlayerData.get(player)
 	local podiums = slotPodiums[slot]
 	if not profile or not podiums then
@@ -670,11 +702,18 @@ local function placeBrainrotForSlot(slot: number, player: Player, entry: any)
 		end
 	end
 
-	local targetIndex
-	for i = 1, #podiums do
-		if not occupied[i] then
-			targetIndex = i
-			break
+	local targetIndex = forcedIndex
+	if targetIndex then
+		-- explicit podium requested: bail if out of range or already taken
+		if targetIndex < 1 or targetIndex > #podiums or occupied[targetIndex] then
+			return
+		end
+	else
+		for i = 1, #podiums do
+			if not occupied[i] then
+				targetIndex = i
+				break
+			end
 		end
 	end
 	if not targetIndex then
@@ -758,6 +797,17 @@ function BaseManager.placeBrainrot(player: Player, entry: any)
 	placeBrainrotForSlot(slot, player, entry)
 end
 
+-- Place an owned brainrot onto a SPECIFIC podium index (called by EconomyManager.placeBrainrot
+-- after it validates ownership / the podium being free). The data side (entry.placed/podium)
+-- is owned by EconomyManager; this only spawns the world model.
+function BaseManager.placeBrainrotAt(player: Player, entry: any, podiumIndex: number)
+	local slot = playerSlot[player]
+	if not slot then
+		return
+	end
+	placeBrainrotForSlot(slot, player, entry, podiumIndex)
+end
+
 function BaseManager.removeBrainrot(player: Player, id: string)
 	local slot = playerSlot[player]
 	if not slot then
@@ -797,8 +847,12 @@ function BaseManager.rebuildPlots(player: Player)
 
 	rebuildSlotPodiums(slot, profile.Plots)
 
+	-- only PLACED brainrots sit on podiums (each on its saved entry.podium); the rest are
+	-- held in the inventory as Tools.
 	for _, entry in ipairs(profile.Collection) do
-		placeBrainrotForSlot(slot, player, entry)
+		if entry.placed and entry.podium then
+			placeBrainrotForSlot(slot, player, entry, entry.podium)
+		end
 	end
 
 	-- refresh ladder / floor-2 / incubator visibility after a plot change
@@ -1069,6 +1123,22 @@ local function buildIncubator(slot: number, cf: CFrame, index: number): any
 			Net.getEvent("Notify"):FireClient(clicker, { title = "Incubator", text = res.reason, color = "Legendary" })
 		end
 	end)
+
+	-- the E-prompt to place a HELD egg into this incubator. Starts disabled; the client
+	-- enables it only while the player holds an egg tool. Server routes to IncubationManager.placeEgg.
+	local eggPrompt = Instance.new("ProximityPrompt")
+	eggPrompt.Name = "IncubatorPrompt"
+	eggPrompt.ActionText = "Place Egg"
+	eggPrompt.ObjectText = "Incubator"
+	eggPrompt.KeyboardKeyCode = Enum.KeyCode.E
+	eggPrompt.RequiresLineOfSight = false
+	eggPrompt.MaxActivationDistance = 18
+	eggPrompt.Enabled = false
+	eggPrompt:SetAttribute("PromptKind", "Incubator")
+	eggPrompt:SetAttribute("Slot", slot)
+	eggPrompt:SetAttribute("IncubatorIndex", index)
+	eggPrompt.Parent = glass
+	CollectionService:AddTag(eggPrompt, INV_PROMPT_TAG)
 
 	rec = {
 		model = unit, home = home, index = index, pos = cf.Position,
@@ -3151,10 +3221,13 @@ function BaseManager.assignBase(player: Player)
 	local plots = profile and profile.Plots or GameConfig.StartingPlots
 	rebuildSlotPodiums(slot, plots)
 
-	-- load the player's brainrots onto the podiums
+	-- load the player's PLACED brainrots onto their saved podiums (unplaced ones stay in
+	-- the inventory as Tools — InventoryManager.sync rebuilds those on join).
 	if profile then
 		for _, entry in ipairs(profile.Collection) do
-			placeBrainrotForSlot(slot, player, entry)
+			if entry.placed and entry.podium then
+				placeBrainrotForSlot(slot, player, entry, entry.podium)
+			end
 		end
 	end
 
@@ -3331,6 +3404,19 @@ function BaseManager.startGateUpdater()
 						or Color3.fromRGB(255, 170, 150)
 				end
 
+				-- keep each podium prompt's Occupied attribute synced so the client can show
+				-- "Place" (empty) vs "Swap"/"Remove" (occupied). Cheap: SetAttribute to the same
+				-- value is a no-op for replication.
+				local promptPodiums = slotPodiums[slot]
+				if promptPodiums then
+					for idx, podium in ipairs(promptPodiums) do
+						local prompt = podium:FindFirstChild("PodiumPrompt")
+						if prompt then
+							prompt:SetAttribute("Occupied", brainrotIdAtPodium(slot, idx) ~= nil)
+						end
+					end
+				end
+
 				-- keep incubator-ghost + ladder Buy affordability tints live for occupants
 				if occupant then
 					refreshBaseProgression(slot)
@@ -3415,6 +3501,59 @@ function BaseManager.init()
 	Net.getFunction("TeleportZone").OnServerInvoke = function(player, zone)
 		return BaseManager.teleportZone(player, zone)
 	end
+
+	-- PLACEMENT PROMPT ROUTER (server-authoritative). Incubator prompts hatch the HELD egg;
+	-- podium prompts place / swap / remove the HELD brainrot. Only the base OWNER may act on
+	-- their own base. The held egg/brainrot is read from the player's equipped Tool — never
+	-- trusted from the client — and each manager re-validates ownership.
+	local function notify(player: Player, title: string, text: string)
+		Net.getEvent("Notify"):FireClient(player, { title = title, text = text, color = "Legendary" })
+	end
+	ProximityPromptService.PromptTriggered:Connect(function(prompt: ProximityPrompt, player: Player)
+		if not CollectionService:HasTag(prompt, INV_PROMPT_TAG) then
+			return
+		end
+		local slot = prompt:GetAttribute("Slot")
+		if playerSlot[player] ~= slot then
+			return -- only the base owner can place into their own base
+		end
+		local kind = prompt:GetAttribute("PromptKind")
+		if kind == "Incubator" then
+			local rarity = InventoryManager.getEquippedEgg(player)
+			if not rarity then
+				notify(player, "Incubator", "Equip an egg first!")
+				return
+			end
+			local res = IncubationManager.placeEgg(player, rarity)
+			if res and res.ok == false and res.reason then
+				notify(player, "Incubator", res.reason)
+			end
+		elseif kind == "Podium" then
+			local podiumIndex = prompt:GetAttribute("PodiumIndex")
+			if typeof(podiumIndex) ~= "number" then
+				return
+			end
+			local heldId = InventoryManager.getEquippedBrainrot(player)
+			local occupied = brainrotIdAtPodium(slot, podiumIndex) ~= nil
+			local res
+			if occupied then
+				if heldId then
+					res = EconomyManager.swapBrainrot(player, podiumIndex, heldId)
+				else
+					res = EconomyManager.unplaceBrainrot(player, podiumIndex)
+				end
+			else
+				if not heldId then
+					notify(player, "Base", "Equip a brainrot to place!")
+					return
+				end
+				res = EconomyManager.placeBrainrot(player, heldId, podiumIndex)
+			end
+			if res and res.ok == false and res.reason then
+				notify(player, "Base", res.reason)
+			end
+		end
+	end)
 
 	basesFolder = Workspace:FindFirstChild(BASES_FOLDER_NAME) :: Folder
 	if basesFolder then

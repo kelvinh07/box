@@ -25,6 +25,7 @@ local Util = require(Shared.Modules.Util)
 local Net = require(Shared.Modules.Net)
 
 local PlayerData = require(script.Parent.PlayerData)
+local InventoryManager = require(script.Parent.InventoryManager)
 
 local IncubationManager = {}
 
@@ -54,17 +55,6 @@ end
 
 -- You can only hatch while standing near ONE OF your incubators.
 local INCUBATOR_RANGE = 24
-
--- how many of this player's incubators currently hold an egg (pending hatches).
-local function pendingCount(profile: any): number
-	local n = 0
-	for i = 1, GameConfig.MaxIncubators do
-		if profile.Incubators[i] ~= nil then
-			n += 1
-		end
-	end
-	return n
-end
 
 ------------------------------------------------------------------ PlaceEgg
 function IncubationManager.placeEgg(player: Player, rarity: string): any
@@ -124,11 +114,8 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 		return { ok = false, reason = "Not enough Cash to hatch." }
 	end
 
-	-- check there's room before committing: each pending hatch reserves a plot too, so
-	-- you can't over-commit more eggs than you have free plots.
-	if (#profile.Collection + pendingCount(profile)) >= profile.Plots then
-		return { ok = false, reason = "All plots are full!" }
-	end
+	-- NOTE: hatching no longer reserves a plot — a hatched brainrot lands in the
+	-- INVENTORY (placed=false). Plots only cap how many can be PLACED to earn income.
 
 	-- commit
 	profile.Eggs[rarity] -= 1
@@ -149,6 +136,9 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
+
+	-- the spent egg's Tool count/removal updates in the player's Backpack.
+	InventoryManager.sync(player)
 
 	-- show the egg inside the glass case immediately
 	if BaseManager and BaseManager.refreshIncubatorEggs then
@@ -174,9 +164,8 @@ function IncubationManager.collect(player: Player, index: number?): any
 	if Workspace:GetServerTimeNow() < inc.endTime then
 		return { ok = false, reason = "Still hatching!" }
 	end
-	if #profile.Collection >= profile.Plots then
-		return { ok = false, reason = "All plots are full — sell or buy a plot." }
-	end
+	-- NOTE: no plot check — the hatched brainrot goes to the INVENTORY (placed=false).
+	-- Plots only cap how many can be PLACED on podiums to earn income.
 
 	local luck = UpgradeConfig.totalLuck(profile.LuckLevel, profile.Rebirths)
 	local group = pickPoolGroup(inc.rarity, luck)
@@ -195,14 +184,14 @@ function IncubationManager.collect(player: Player, index: number?): any
 		tier = group.tier,         -- base brainrot tier (drives income + label colour)
 		variant = group.variant,   -- Normal / Gold / Diamond, set by the egg's pool
 		level = 1, -- brainrots start at level 1; levels persist through rebirth
+		placed = false,            -- lands in the INVENTORY; placed on a podium later to earn
+		podium = nil,
 	}
 	table.insert(profile.Collection, entry)
 	profile.Incubators[slot] = nil
 
-	-- spawn the physical podium model
-	if BaseManager then
-		BaseManager.placeBrainrot(player, entry)
-	end
+	-- the hatched brainrot lands in the inventory (no auto-place) as a held Tool.
+	InventoryManager.sync(player)
 
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
@@ -268,6 +257,8 @@ function IncubationManager.discardEgg(player: Player, rarity: string): any
 	profile.Eggs[rarity] = math.max(0, (profile.Eggs[rarity] or 0) - 1)
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
+	-- update the egg Tool's count / remove it if this was the last one.
+	InventoryManager.sync(player)
 	return { ok = true, rarity = rarity }
 end
 

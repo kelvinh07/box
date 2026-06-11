@@ -17,6 +17,7 @@ local BaseManager = require(Managers.BaseManager)
 local DiggingManager = require(Managers.DiggingManager)
 local IncubationManager = require(Managers.IncubationManager)
 local EconomyManager = require(Managers.EconomyManager)
+local InventoryManager = require(Managers.InventoryManager)
 local UpgradeManager = require(Managers.UpgradeManager)
 local RebirthManager = require(Managers.RebirthManager)
 local StandManager = require(Managers.StandManager)
@@ -52,6 +53,9 @@ end)
 DiggingManager.init()
 IncubationManager.init()
 EconomyManager.init()
+-- inventory tools (Backpack/toolbar) — after the managers that mutate Eggs/Collection exist; it
+-- owns the Tool lifecycle and is called by those managers + on join/respawn below.
+InventoryManager.init()
 UpgradeManager.init()
 RebirthManager.init()
 -- admin chat commands (/test) — the handler only acts for players in AdminConfig
@@ -92,11 +96,16 @@ local function onJoin(player: Player)
 	PlayerData.load(player)
 	BaseManager.assignBase(player)
 
-	-- faster movement + the zone-gate collision group + no player shadow, every spawn
+	-- faster movement + the zone-gate collision group + no player shadow, every spawn. The
+	-- Backpack is recreated on respawn (tools reset), so RE-SYNC the inventory tools each
+	-- CharacterAdded (deferred so the new Backpack exists).
 	player.CharacterAdded:Connect(function(char)
 		applyWalkSpeed(char)
 		removeCharacterShadow(char)
 		BaseManager.applyZoneGate(player)
+		task.defer(function()
+			InventoryManager.sync(player)
+		end)
 	end)
 	if player.Character then
 		applyWalkSpeed(player.Character)
@@ -104,9 +113,11 @@ local function onJoin(player: Player)
 		BaseManager.applyZoneGate(player)
 	end
 
-	-- give the client a moment to set up its remotes/UI then push state
+	-- give the client a moment to set up its remotes/UI then push state + seed the inventory
+	-- tools (defer so the Backpack exists after the profile load + base assignment).
 	task.defer(function()
 		PlayerData.push(player)
+		InventoryManager.sync(player)
 	end)
 end
 
@@ -115,6 +126,7 @@ local function onLeave(player: Player)
 	BaseManager.freeBase(player)
 	DiggingManager.cleanup(player)
 	EconomyManager.cleanup(player)
+	InventoryManager.cleanup(player)
 end
 
 for _, player in ipairs(Players:GetPlayers()) do

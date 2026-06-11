@@ -23,6 +23,7 @@ local BrainrotMath = require(Shared.Modules.BrainrotMath)
 local Net = require(Shared.Modules.Net)
 
 local PlayerData = require(script.Parent.PlayerData)
+local InventoryManager = require(script.Parent.InventoryManager)
 
 local EconomyManager = {}
 
@@ -81,10 +82,14 @@ function EconomyManager.startIncomeLoop()
 					local bag = accrued[player]
 					local gems = 0
 					for _, entry in ipairs(profile.Collection) do
-						local c, g = BrainrotMath.income(entry, profile.Rebirths)
-						local cap = math.max(50, c * ACCRUE_CAP_CYCLES)
-						bag[entry.id] = math.min(cap, (bag[entry.id] or 0) + c)
-						gems += g
+						-- income ONLY for PLACED brainrots (on a podium); inventory
+						-- brainrots sit idle until placed on a plot.
+						if entry.placed then
+							local c, g = BrainrotMath.income(entry, profile.Rebirths)
+							local cap = math.max(50, c * ACCRUE_CAP_CYCLES)
+							bag[entry.id] = math.min(cap, (bag[entry.id] or 0) + c)
+							gems += g
+						end
 					end
 
 					-- gems are fractional per cycle; accumulate then floor on the player
@@ -181,18 +186,147 @@ function EconomyManager.sellBrainrot(player: Player, id: string): any
 	local cash = select(1, BrainrotMath.income(entry, p.Rebirths))
 	local refund = math.max(5, math.floor(cash * 30))
 
+	local wasPlaced = entry.placed == true
+
 	table.remove(p.Collection, index)
 	p.Cash += refund
 	if accrued[player] then
 		accrued[player][id] = nil -- forfeit any uncollected cash on this brainrot
 	end
 
-	if BaseManager then
+	-- only a PLACED brainrot has a world model to destroy + a podium to free.
+	if wasPlaced and BaseManager then
 		BaseManager.removeBrainrot(player, id)
 	end
+	-- sync removes the sold brainrot's inventory Tool (if it was unplaced).
+	InventoryManager.sync(player)
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
 	return { ok = true, refund = refund }
+end
+
+----------------------------------------------------------------- place / unplace / swap
+-- Move an owned, UNPLACED brainrot onto a specific base podium so it starts earning.
+function EconomyManager.placeBrainrot(player: Player, brainrotId: string, podiumIndex: number): any
+	local p = PlayerData.get(player)
+	if not p then
+		return { ok = false, reason = "No profile." }
+	end
+
+	local podium = math.floor(tonumber(podiumIndex) or 0)
+	if podium < 1 or podium > (p.Plots or 0) then
+		return { ok = false, reason = "Invalid podium." }
+	end
+
+	local entry
+	for _, e in ipairs(p.Collection) do
+		if e.id == brainrotId then
+			entry = e
+			break
+		end
+	end
+	if not entry then
+		return { ok = false, reason = "Brainrot not found." }
+	end
+	if entry.placed then
+		return { ok = false, reason = "Already placed." }
+	end
+
+	-- no two placed brainrots may share a podium.
+	for _, e in ipairs(p.Collection) do
+		if e.placed and e.podium == podium then
+			return { ok = false, reason = "That podium is occupied." }
+		end
+	end
+
+	entry.placed = true
+	entry.podium = podium
+	if BaseManager then
+		BaseManager.placeBrainrotAt(player, entry, podium)
+	end
+	InventoryManager.sync(player)
+	PlayerData.markDirty(player)
+	PlayerData.push(player)
+	return { ok = true }
+end
+
+-- Take the placed brainrot off `podiumIndex` and return it to the inventory.
+function EconomyManager.unplaceBrainrot(player: Player, podiumIndex: number): any
+	local p = PlayerData.get(player)
+	if not p then
+		return { ok = false, reason = "No profile." }
+	end
+	local podium = math.floor(tonumber(podiumIndex) or 0)
+
+	local entry
+	for _, e in ipairs(p.Collection) do
+		if e.placed and e.podium == podium then
+			entry = e
+			break
+		end
+	end
+	if not entry then
+		return { ok = false, reason = "Nothing on that podium." }
+	end
+
+	entry.placed = false
+	entry.podium = nil
+	if accrued[player] then
+		accrued[player][entry.id] = nil -- forfeit uncollected cash; it no longer earns
+	end
+	if BaseManager then
+		BaseManager.removeBrainrot(player, entry.id)
+	end
+	InventoryManager.sync(player)
+	PlayerData.markDirty(player)
+	PlayerData.push(player)
+	return { ok = true }
+end
+
+-- Swap whatever is on `podiumIndex` for the (owned, unplaced) newBrainrotId: the old
+-- one goes back to the inventory, the new one takes the podium.
+function EconomyManager.swapBrainrot(player: Player, podiumIndex: number, newBrainrotId: string): any
+	local p = PlayerData.get(player)
+	if not p then
+		return { ok = false, reason = "No profile." }
+	end
+
+	-- validate the incoming brainrot is owned + unplaced BEFORE we unplace the old one.
+	local newEntry
+	for _, e in ipairs(p.Collection) do
+		if e.id == newBrainrotId then
+			newEntry = e
+			break
+		end
+	end
+	if not newEntry then
+		return { ok = false, reason = "Brainrot not found." }
+	end
+	if newEntry.placed then
+		return { ok = false, reason = "Already placed." }
+	end
+
+	local podium = math.floor(tonumber(podiumIndex) or 0)
+	if podium < 1 or podium > (p.Plots or 0) then
+		return { ok = false, reason = "Invalid podium." }
+	end
+
+	-- if a brainrot currently occupies the podium, unplace it back to the inventory.
+	local occupant
+	for _, e in ipairs(p.Collection) do
+		if e.placed and e.podium == podium then
+			occupant = e
+			break
+		end
+	end
+	if occupant then
+		local res = EconomyManager.unplaceBrainrot(player, podium)
+		if not res.ok then
+			return res
+		end
+	end
+
+	return EconomyManager.placeBrainrot(player, newBrainrotId, podium)
 end
 
 ----------------------------------------------------------------- level brainrot
