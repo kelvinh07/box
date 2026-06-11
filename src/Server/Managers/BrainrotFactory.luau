@@ -348,57 +348,35 @@ function BrainrotFactory.build(entry: any, rebirthCount: number): Model
 end
 
 ----------------------------------------------------------------- handheld (Tool)
--- The display target for a HANDHELD model's VISIBLE longest axis after scaling. Tools are held
--- in the hand, so the model must be SMALL (a few studs) — much smaller than the podium display.
-local HANDHELD_MAX_AXIS = 3.5
-
--- Like normalizeSize, but scales the VISIBLE longest axis to HANDHELD_MAX_AXIS (no `scale`
--- multiplier — every brainrot fits the same small hand budget). Manual per-part scaling for
--- the same reason build() avoids Model:ScaleTo (rigged models break under ScaleTo).
-local function normalizeHandheld(model: Model)
-	local center, size = visibleBounds(model)
-	local maxAxis = math.max(size.X, size.Y, size.Z)
-	if maxAxis <= 0 then return end
-	local factor = HANDHELD_MAX_AXIS / maxAxis
-	for _, d in ipairs(model:GetDescendants()) do
-		if d:IsA("BasePart") then
-			local pos = d.Position
-			local rot = d.CFrame - pos -- rotation-only CFrame
-			d.Size *= factor
-			d.CFrame = rot + (center + (pos - center) * factor)
-			local mesh = d:FindFirstChildWhichIsA("DataModelMesh") -- SpecialMesh/BlockMesh/etc.
-			if mesh then
-				mesh.Scale *= factor
-				mesh.Offset *= factor
-			end
-		elseif d:IsA("Attachment") then
-			d.Position *= factor
-		end
-	end
-end
-
--- Build a SMALL, hand-held version of a brainrot (for a Tool the player carries in their
--- inventory/Backpack). Same recolor language as build(), but WITHOUT the podium glow or the
--- info billboard, scaled tiny, and with every part UNANCHORED + MASSLESS + non-colliding so it
--- can be welded to a Tool Handle and held without dragging the character around.
+-- Build a hand-held version of a brainrot (for a Tool the player carries in their
+-- inventory/Backpack). Same recolor language + FULL podium SIZE as build() (it scales with the
+-- identical normalizeSize(model, scale), so the in-hand model matches the podium display), but
+-- WITHOUT the podium glow or the info billboard (a held tool shouldn't carry the floating name),
+-- and with every part UNANCHORED + MASSLESS + non-colliding so it can be welded to a Tool Handle
+-- and held without dragging the character around.
 function BrainrotFactory.buildHandheld(entry: any): Model
 	local base = BrainrotConfig.get(entry.base)
+	local scale = base and base.Scale or 1
 	local color = base and base.Color or Color3.fromRGB(200, 200, 200)
 
 	-- 1) the imported animal model; else 2) a Creator Store asset; else 3) procedural placeholder.
 	local model: Model? = cloneRealModel(entry.base)
-	if not model then
+	if model then
+		normalizeSize(model, scale)
+	else
 		local assetId = AssetConfig.brainrotAssetId(entry.base)
 		if assetId then
 			model = tryInsert(assetId, entry.base)
+			if model then
+				normalizeSize(model, scale)
+			end
 		end
 		if not model then
-			model = buildPlaceholder(entry.base, color, 1)
+			model = buildPlaceholder(entry.base, color, scale)
 		end
 	end
 
 	recolorVariant(model, entry.variant) -- Gold/Diamond/Galaxy recolor (Normal keeps real textures)
-	normalizeHandheld(model)
 
 	-- a held tool must be free-moving: unanchor, make weightless, no collisions.
 	for _, d in ipairs(model:GetDescendants()) do

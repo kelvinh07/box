@@ -21,6 +21,32 @@ local EggConfig = {}
 -- Ordered list (used for UI ordering, dig odds, and the pool math below).
 EggConfig.Order = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic" } :: { string }
 
+-- DISPLAY SIZING — the SINGLE source of truth for how big the (full-detail) pixel egg is, shared
+-- by the in-world dug egg (Client/DigSite), the in-hand egg Tool (ToolFactory), and the inventory
+-- ViewportFrame cards (Client/ToolVisual). egg height = HeightBase * RevealMult[rarity].
+EggConfig.HeightBase = 0.6 -- one "x" of egg height
+EggConfig.RevealMult = {
+	Common    = 8,
+	Uncommon  = 10,
+	Rare      = 12,
+	Epic      = 13.5, -- between Rare and Legendary
+	Legendary = 15,
+	Mythic    = 17,   -- one size bigger than Legendary
+}
+
+-- The full-detail display height (studs) for an egg of `rarity` (defaults to Common's mult).
+function EggConfig.displayHeight(rarity: string): number
+	return EggConfig.HeightBase * (EggConfig.RevealMult[rarity] or EggConfig.RevealMult.Common)
+end
+
+-- Voxel resolution (PixelEgg voxH) for the in-hand egg TOOL. Set to 12 to match the dug egg's
+-- FULL detail (per design: the held egg should be the real egg at full size + detail). NOTE the
+-- cost: the Tool egg is SERVER-built, welded, and replicated to every client while equipped — at
+-- voxH 12 each egg is ~489 welded parts (vs ~59 at voxH 6). voxH only trades part-count for pixel
+-- fineness (size/silhouette come from displayHeight), so if a playtest shows replication/instance
+-- pressure with many players holding eggs, dialing this back to 6-8 keeps the look while cutting parts.
+EggConfig.ToolVoxH = 12
+
 -- How many egg tiers UP each variant shifts a brainrot. Galaxy (+3) is created but PARKED
 -- (it would need eggs above Mythic), so it is intentionally absent here until new eggs exist.
 EggConfig.VariantOffset = { Normal = 0, Gold = 1, Diamond = 2 }

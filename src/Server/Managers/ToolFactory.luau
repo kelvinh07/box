@@ -19,15 +19,13 @@ local Shared = ReplicatedStorage.Shared
 
 local PixelEgg = require(Shared.Modules.PixelEgg)
 local RarityColors = require(Shared.Config.RarityColors)
+local EggConfig = require(Shared.Config.EggConfig)
 local BrainrotFactory = require(script.Parent.BrainrotFactory)
 
 local ToolFactory = {}
 
 -- Handle is small + invisible; the visible model is welded on top of it.
 local HANDLE_SIZE = Vector3.new(1.4, 1.4, 1.4)
-
--- Pixel egg height for the in-hand display (small enough to read in the toolbar).
-local EGG_HANDHELD_HEIGHT = 2.4
 
 ----------------------------------------------------------------- helpers
 -- Make a fresh invisible Handle part for a tool.
@@ -55,10 +53,50 @@ local function weldPartToHandle(part: BasePart, handle: Part)
 	weld.Parent = part
 end
 
+-- World-space center of ONLY the model's VISIBLE geometry. The imported brainrot models carry an
+-- oversized INVISIBLE RootPart (their PrimaryPart) that is OFF-center from the rendered animal, so
+-- pivoting on it makes a full-size (~10-stud) model hang/clip well off the hand. We measure the
+-- real geometry instead (matches BrainrotFactory.visibleBounds) so we can center the visible animal
+-- on the handle. Returns nil if nothing visible (caller falls back to the pivot).
+local function visibleCenter(model: Model): Vector3?
+	local min: Vector3?, max: Vector3? = nil, nil
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency < 0.95 and not (d == model.PrimaryPart and d.Name == "RootPart") then
+			local cf, half = d.CFrame, d.Size / 2
+			for sx = -1, 1, 2 do
+				for sy = -1, 1, 2 do
+					for sz = -1, 1, 2 do
+						local c = (cf * CFrame.new(sx * half.X, sy * half.Y, sz * half.Z)).Position
+						if not min then
+							min, max = c, c
+						else
+							min = Vector3.new(math.min(min.X, c.X), math.min(min.Y, c.Y), math.min(min.Z, c.Z))
+							max = Vector3.new(math.max(max.X, c.X), math.max(max.Y, c.Y), math.max(max.Z, c.Z))
+						end
+					end
+				end
+			end
+		end
+	end
+	if not min or not max then
+		return nil
+	end
+	return (min + max) / 2
+end
+
 -- Weld every BasePart of `model` to `handle`, after making them unanchored/massless/non-collide.
--- The model is pivoted so it sits on the handle before welding.
+-- The model is moved so its VISIBLE-geometry center sits on the handle (NOT its off-center invisible
+-- RootPart pivot) so a full-size model reads in-hand instead of jutting through the avatar/camera.
 local function weldModelToHandle(model: Model, handle: Part)
-	model:PivotTo(handle.CFrame) -- centre the visible model on the handle so it reads in-hand.
+	local center = visibleCenter(model)
+	if center then
+		-- translate the whole model so its visible center lands on the handle position (a pure
+		-- world-space shift by (handle.Position - center); orientation is preserved)
+		local delta = handle.Position - center
+		model:PivotTo(model:GetPivot() + delta)
+	else
+		model:PivotTo(handle.CFrame) -- nothing visible (shouldn't happen): fall back to the pivot.
+	end
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") then
 			weldPartToHandle(d, handle)
@@ -80,11 +118,14 @@ function ToolFactory.buildEggTool(rarity: string): Tool
 	local handle = makeHandle()
 	handle.Parent = tool
 
-	-- a small, rarity-tinted pixel egg welded to the handle. PixelEgg builds an ANCHORED model
-	-- centred at the given point (here the handle), so we weld each cube to the handle and drop
-	-- the transparent EggCore (no need for it once welded).
+	-- a rarity-tinted pixel egg welded to the handle — SAME SIZE as the in-world dug egg
+	-- (height = EggConfig.displayHeight(rarity)) but a LOWER voxel resolution (EggConfig.ToolVoxH)
+	-- so the welded, replicated in-hand assembly stays cheap (the dug egg can afford voxH 12 since
+	-- it's anchored + client-local + built lazily). voxH only trades cube count for pixel fineness,
+	-- so the silhouette matches. PixelEgg builds an ANCHORED model centred at the given point (here
+	-- the handle), so we weld each cube to the handle and drop the transparent EggCore.
 	local color = RarityColors.tier(rarity)
-	local egg = PixelEgg.build(handle.Position, EGG_HANDHELD_HEIGHT, color, 6)
+	local egg = PixelEgg.build(handle.Position, EggConfig.displayHeight(rarity), color, EggConfig.ToolVoxH)
 	for _, d in ipairs(egg:GetChildren()) do
 		if d:IsA("BasePart") and d.Name ~= "EggCore" then
 			d.Parent = tool

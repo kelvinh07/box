@@ -1,26 +1,25 @@
 --!strict
 -- Inventory
--- The custom inventory OVERLAY that sits on top of the Roblox toolbar/Backpack. It browses
--- everything the player owns, grouped under three filter tabs:
---   * All Items  — eggs (per rarity, with count) + every owned brainrot
+-- The custom inventory OVERLAY (the EXPANDED backpack view) that sits on top of the custom
+-- hotbar. It browses the UNPLACED items the player owns, grouped under three filter tabs:
+--   * All Items  — eggs (per rarity, with count) + every UNPLACED brainrot
 --   * Eggs       — just the eggs, rarest first
---   * Brainrots  — every owned brainrot, rarest first then highest base earning first
+--   * Brainrots  — every UNPLACED brainrot, rarest first then highest base earning first
 --
--- Each item is a CARD with a transparent ViewportFrame icon:
---   * Egg card     — a rarity-tinted PixelEgg + "{Rarity} Egg" + a count badge.
---   * Brainrot card — the brainrot's name (top), a render of the model, and its SPECIFIC
---     current $/s (bottom, via BrainrotMath so it reflects level + rebirth). A "PLACED" tag
---     marks brainrots currently on a podium; a small Sell button is always available.
+-- Brainrots PLACED on a base podium are NOT tracked here (they have no Tool to carry); only
+-- unplaced brainrots — the ones you can equip + place — appear.
 --
--- Clicking a card EQUIPS its Tool (egg, or an UNPLACED brainrot) so the player can carry it to
--- an incubator / podium and press E to place it. Placed brainrots have no Tool, so clicking
--- them just previews (you remove them by interacting with the podium in-world).
+-- Each item is a CARD with a transparent ViewportFrame icon (rendered via the shared ToolVisual
+-- so it FILLS the card):
+--   * Egg card     — a full-detail rarity-tinted PixelEgg + "{Rarity} Egg" + a count badge.
+--   * Brainrot card — the brainrot's name (top), the full model render, and its SPECIFIC current
+--     $/s (bottom, via BrainrotMath so it reflects level + rebirth) + Equip + Sell.
 --
--- The real Tool lifecycle lives on the server (InventoryManager); this panel only reflects the
--- snapshot + requests equip/sell.
+-- Clicking Equip EQUIPS the card's Tool so the player can carry it to an incubator / podium and
+-- press E to place it. The real Tool lifecycle lives on the server (InventoryManager); this
+-- panel only reflects the snapshot + requests equip/sell.
 
 local Players = game:GetService("Players")
-local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 
@@ -29,12 +28,12 @@ local RarityColors = require(Shared.Config.RarityColors)
 local BrainrotConfig = require(Shared.Config.BrainrotConfig)
 local VariantConfig = require(Shared.Config.VariantConfig)
 local BrainrotMath = require(Shared.Modules.BrainrotMath)
-local PixelEgg = require(Shared.Modules.PixelEgg)
 local Format = require(Shared.Modules.Format)
 
 local UIUtil = require(script.Parent.Parent.UIUtil)
 local ClientState = require(script.Parent.Parent.ClientState)
 local ClientNet = require(script.Parent.Parent.ClientNet)
+local ToolVisual = require(script.Parent.Parent.ToolVisual)
 local Sounds = require(script.Parent.Parent.Sounds)
 
 local player = Players.LocalPlayer
@@ -46,114 +45,10 @@ local TIER_RANK = { Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5,
 
 local Z = 30 -- above the modals (20) so the overlay always wins
 
------------------------------------------------------------------ viewport helpers
--- world-space (center, size) of an instance's VISIBLE BaseParts
-local function computeBounds(inst: Instance): (Vector3, Vector3)
-	local minv: Vector3?, maxv: Vector3? = nil, nil
-	for _, d in ipairs(inst:GetDescendants()) do
-		if d:IsA("BasePart") and d.Transparency < 1 then
-			local cf, h = d.CFrame, d.Size / 2
-			for sx = -1, 1, 2 do
-				for sy = -1, 1, 2 do
-					for sz = -1, 1, 2 do
-						local p = (cf * CFrame.new(sx * h.X, sy * h.Y, sz * h.Z)).Position
-						if not minv then
-							minv, maxv = p, p
-						else
-							minv = Vector3.new(math.min(minv.X, p.X), math.min(minv.Y, p.Y), math.min(minv.Z, p.Z))
-							maxv = Vector3.new(math.max(maxv.X, p.X), math.max(maxv.Y, p.Y), math.max(maxv.Z, p.Z))
-						end
-					end
-				end
-			end
-		end
-	end
-	if not minv or not maxv then
-		return Vector3.zero, Vector3.one
-	end
-	return (minv + maxv) / 2, (maxv - minv)
-end
-
--- Mount a built model into a transparent ViewportFrame + frame a camera on it. Strips
--- labels/lights/particles so only the geometry renders.
-local function frameViewport(vf: ViewportFrame, holder: Model)
-	for _, d in ipairs(holder:GetDescendants()) do
-		if d:IsA("BasePart") then
-			d.Anchored = true
-			d.CanCollide = false
-		elseif d:IsA("BillboardGui") or d:IsA("SurfaceGui") or d:IsA("ClickDetector")
-			or d:IsA("ProximityPrompt") or d:IsA("ParticleEmitter") or d:IsA("Light") then
-			d:Destroy()
-		end
-	end
-	holder.Parent = vf
-
-	local center, size = computeBounds(holder)
-	local cam = Instance.new("Camera")
-	cam.Parent = vf
-	vf.CurrentCamera = cam
-	local span = math.max(size.X, size.Y, size.Z)
-	if span <= 0 then span = 6 end
-	local dist = span * 1.7
-	cam.CFrame = CFrame.lookAt(center + Vector3.new(dist * 0.35, dist * 0.3, dist), center)
-end
-
--- Find a replicated model for a brainrot id: its inventory Tool (Backpack/Character) or its
--- placed podium model in Workspace. Returns nil if none is replicated yet.
-local function findBrainrotSource(id: string): Instance?
-	local function scanTools(container: Instance?): Instance?
-		if not container then
-			return nil
-		end
-		for _, c in ipairs(container:GetChildren()) do
-			if c:IsA("Tool") and c:GetAttribute("Kind") == "Brainrot" and c:GetAttribute("BrainrotId") == id then
-				return c
-			end
-		end
-		return nil
-	end
-	local fromTool = scanTools(player:FindFirstChild("Backpack")) or scanTools(player.Character)
-	if fromTool then
-		return fromTool
-	end
-	for _, m in ipairs(CollectionService:GetTagged("Brainrot")) do
-		if m:GetAttribute("BrainrotId") == id then
-			return m
-		end
-	end
-	return nil
-end
-
--- Build a brainrot ViewportFrame icon. Returns false if no source model is replicated (caller
--- shows a colored swatch fallback instead).
-local function renderBrainrot(vf: ViewportFrame, id: string): boolean
-	local src = findBrainrotSource(id)
-	if not src then
-		return false
-	end
-	local holder = Instance.new("Model")
-	local clone = src:Clone()
-	if clone:IsA("Model") then
-		clone.Parent = holder
-	else
-		-- a Tool: lift its BaseParts into the holder model
-		for _, d in ipairs(clone:GetDescendants()) do
-			if d:IsA("BasePart") then
-				d.Parent = holder
-			end
-		end
-		clone:Destroy()
-	end
-	frameViewport(vf, holder)
-	return true
-end
-
-local function renderEgg(vf: ViewportFrame, rarity: string)
-	local holder = Instance.new("Model")
-	local egg = PixelEgg.build(Vector3.zero, 4, RarityColors.tier(rarity), 6)
-	egg.Parent = holder
-	frameViewport(vf, holder)
-end
+-- viewport rendering lives in the shared ToolVisual module (full-detail egg + tightly-framed
+-- brainrot model) so the hotbar + this overlay never duplicate the bounds/camera maths.
+local renderEgg = ToolVisual.renderEgg
+local renderBrainrot = ToolVisual.renderBrainrotById
 
 ----------------------------------------------------------------- card builders
 local CELL = Vector2.new(140, 178)
@@ -259,29 +154,18 @@ local function makeBrainrotCard(parent: Instance, entry: any, rebirths: number, 
 	})
 	sub.ZIndex = Z + 2
 
-	if entry.placed then
-		local tag = UIUtil.label({
-			Size = UDim2.new(0, 64, 0, 20),
-			Position = UDim2.new(0.5, 0, 0, 150),
-			AnchorPoint = Vector2.new(0.5, 0),
-			Text = "PLACED",
-			TextColor3 = UIUtil.Colors.Good,
-			Parent = card,
-		})
-		tag.ZIndex = Z + 3
-	else
-		-- click-to-equip is only for UNPLACED brainrots (placed ones have no Tool)
-		local equip = UIUtil.button({
-			Size = UDim2.new(0, 64, 0, 22),
-			Position = UDim2.new(0, 6, 0, 150),
-			BackgroundColor3 = UIUtil.Colors.Gem,
-			Text = "Equip",
-			TextSize = 16,
-			Parent = card,
-		})
-		equip.ZIndex = Z + 3
-		equip.MouseButton1Click:Connect(onEquip)
-	end
+	-- only UNPLACED brainrots reach this card (placed ones are filtered out upstream), so Equip
+	-- is always available — it equips the Tool so the player can carry + place it.
+	local equip = UIUtil.button({
+		Size = UDim2.new(0, 64, 0, 22),
+		Position = UDim2.new(0, 6, 0, 150),
+		BackgroundColor3 = UIUtil.Colors.Gem,
+		Text = "Equip",
+		TextSize = 16,
+		Parent = card,
+	})
+	equip.ZIndex = Z + 3
+	equip.MouseButton1Click:Connect(onEquip)
 
 	local sell = UIUtil.button({
 		Size = UDim2.new(0, 58, 0, 22),
@@ -505,9 +389,11 @@ function Inventory.build(gui: ScreenGui)
 
 		-- BRAINROTS: tier DESC, then base earning (tierCash * variant.CashMult) DESC
 		if activeFilter == "All" or activeFilter == "Brainrots" then
+			-- ONLY unplaced brainrots: placed ones live on a base podium (no Tool) and are not
+			-- tracked in this overlay.
 			local list = {}
 			for _, e in ipairs(state.Collection or {}) do
-				if matches(e.base) then
+				if e.placed ~= true and matches(e.base) then
 					table.insert(list, e)
 				end
 			end

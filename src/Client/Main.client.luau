@@ -22,6 +22,7 @@ local UI = script.Parent.UI
 local Effects = require(UI.Effects)
 local TopBar = require(UI.TopBar)
 local HUD = require(UI.HUD)
+local Hotbar = require(UI.Hotbar)
 local Inventory = require(UI.Inventory)
 local HomeButton = require(UI.HomeButton)
 local ShopsButton = require(UI.ShopsButton)
@@ -66,6 +67,8 @@ startSafe("GrassChecker", function() GrassChecker.start() end)
 -- persistent HUD
 startSafe("TopBar", function() TopBar.build(screen) end)
 startSafe("HUD", function() HUD.build(screen) end)
+-- the custom bottom hotbar (visually REPLACES the default Roblox hotbar/Backpack CoreGui).
+startSafe("Hotbar", function() Hotbar.start(screen) end)
 -- the custom inventory overlay (replaces the old egg Backpack panel + Collection modal); it
 -- builds its own 🎒 button. InventoryClient toggles the world placement prompts by equip.
 local inventory

@@ -18,6 +18,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 local RarityColors = require(Shared.Config.RarityColors)
 local ShovelConfig = require(Shared.Config.ShovelConfig)
+local EggConfig = require(Shared.Config.EggConfig)
 local Net = require(Shared.Modules.Net)
 local Surface = require(Shared.Modules.Surface)
 local PixelEgg = require(Shared.Modules.PixelEgg)
@@ -37,7 +38,10 @@ local digSpeedMult = 1 -- live shovel multiplier from the snapshot (DigSpeedMult
 local REGROW_SECONDS = 4
 local PER_STAGE = ShovelConfig.PerStage -- seconds of hold per pop stage (shared w/ server)
 
-local EGG_HEIGHT_BASE = 0.6 -- one "x" of egg height; egg height = mult * this
+-- Egg sizing is SINGLE-SOURCED in EggConfig so the dug egg, the in-hand tool egg, and the
+-- inventory/hotbar icon eggs all share the same height. EGG_HEIGHT_BASE is one "x" of egg
+-- height; the dug egg's height = REVEAL_MULT[rarity] * EGG_HEIGHT_BASE (== EggConfig.displayHeight).
+local EGG_HEIGHT_BASE = EggConfig.HeightBase -- one "x" of egg height; egg height = mult * this
 local PATCH_D = 6.0         -- rough dirt-patch span
 local PATCH_PIECES = 3      -- slabs per patch (overlapping => uneven shape)
 
@@ -47,15 +51,9 @@ local MYSTERY_MULT = 11                       -- medium (between the old common 
 local MYSTERY_COLOR = Color3.fromRGB(34, 34, 42)
 
 -- REVEAL: per-rarity egg SIZE used only AFTER the egg is dug up (color comes from
--- RarityColors). Dig TIME is no longer rarity-based — it's zone-based (ShovelConfig).
-local REVEAL_MULT = {
-	Common    = 8,
-	Uncommon  = 10,
-	Rare      = 12,
-	Epic      = 13.5, -- between Rare and Legendary
-	Legendary = 15,
-	Mythic    = 17,   -- one size bigger than Legendary
-}
+-- RarityColors). Dig TIME is no longer rarity-based — it's zone-based (ShovelConfig). Sourced
+-- from EggConfig so the value is shared with the tool/icon eggs (pure refactor — same numbers).
+local REVEAL_MULT = EggConfig.RevealMult
 
 -- The egg is a PIXEL egg: cube "studs" (voxels) filling an egg ellipsoid (built by the
 -- shared PixelEgg module). VOX_H = how many voxels tall (higher = finer pixels, more cube
