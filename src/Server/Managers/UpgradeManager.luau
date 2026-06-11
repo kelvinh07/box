@@ -49,6 +49,10 @@ function UpgradeManager.buyShovel(player: Player): any
 	end
 
 	local nextLevel = p.ShovelLevel + 1
+	local needRb = ShovelConfig.tierUnlockRebirths(nextLevel)
+	if p.Rebirths < needRb then
+		return { ok = false, reason = ("%d rebirths needed"):format(needRb) }
+	end
 	local cost, currency = ShovelConfig.cost(nextLevel)
 	if not charge(p, currency, cost) then
 		return { ok = false, reason = "Not enough " .. currency .. "." }
@@ -73,6 +77,10 @@ function UpgradeManager.buyIncubator(player: Player): any
 	end
 
 	local nextLevel = p.IncubatorLevel + 1
+	local needRb = UpgradeConfig.incubatorTierUnlockRebirths(nextLevel)
+	if p.Rebirths < needRb then
+		return { ok = false, reason = ("%d rebirths needed"):format(needRb) }
+	end
 	local tier = UpgradeConfig.Incubator.Levels[nextLevel]
 	if not charge(p, tier.Currency, tier.Cost) then
 		return { ok = false, reason = "Not enough " .. tier.Currency .. "." }

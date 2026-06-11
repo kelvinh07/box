@@ -1,16 +1,15 @@
 --!strict
 -- Stands
 -- The three upgrade panels, each opened INSTANTLY by walking up to its in-world
--- stand and pressing E. This replaces the old central Shop modal — plots are now
--- bought at the base ghost-podium, and the gem/cash upgrades live here:
---   🪓 Shovel Shop  (Cash/Gems → dig speed),  🔥 Incubator (Cash/Gems → hatch
---   speed),  🍀 Luck (Gems → luck).
+-- stand and pressing E.
+--   🪓 Shovel Shop (Gems → dig speed),  🔥 Incubator (Gems → hatch speed),
+--   🍀 Luck (Gems → luck).
 --
--- Each panel shows the FULL tier progression (a card per tier) so the player can
--- see what's coming, plus one BUY button that purchases the NEXT tier. Tiers can
--- cost EITHER Cash ($) or Gems (💎) — the card + BUY button show the right icon and
--- check affordability against the matching currency. All purchases are validated
--- server-side; the panel just reflects the snapshot.
+-- Each panel shows the FULL tier progression (a card per tier) plus one BUY button that
+-- purchases the NEXT tier. ALL shovel/incubator/luck tiers cost GEMS. Shovel + Incubator
+-- tiers are ALSO rebirth-gated: tiers 1-3 are open, 4-6 need 5 rebirths, 7-9 need 10. A
+-- rebirth-locked tier shows a grey cover; clicking it toasts "N Rebirths needed". All
+-- purchases are validated server-side; the panel just reflects the snapshot.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ProximityPromptService = game:GetService("ProximityPromptService")
@@ -25,18 +24,20 @@ local UIUtil = require(script.Parent.Parent.UIUtil)
 local ClientState = require(script.Parent.Parent.ClientState)
 local ClientNet = require(script.Parent.Parent.ClientNet)
 local Sounds = require(script.Parent.Parent.Sounds)
+local Effects = require(script.Parent.Effects)
 
 local LocalPlayer = Players.LocalPlayer
 
 local Stands = {}
 
--- A tier as the panels consume it: a display name, an effect string, and a cost
--- with its currency. Built per-panel from the relevant config below.
+-- A tier as the panels consume it: a display name, an effect string, a cost with its
+-- currency, and how many rebirths are needed to BUY it (0 = always available).
 type Tier = {
 	name: string,
 	effect: string,
 	cost: number,
 	currency: string, -- "Cash" | "Gems"
+	unlockRebirths: number,
 }
 
 -- the per-currency cost string ("$1.5K" vs "300 💎")
@@ -49,8 +50,8 @@ end
 
 ------------------------------------------------------------------- tier card
 -- One row describing a single tier. Returns the card plus its name/effect/cost
--- labels and a small "owned/next" status pill so the panel can keep them in sync.
-local function tierCard(parent: Instance, order: number): (Frame, TextLabel, TextLabel, TextLabel, TextLabel)
+-- labels, a small "owned/next" status pill, AND a grey rebirth-LOCK cover button.
+local function tierCard(parent: Instance, order: number): (Frame, TextLabel, TextLabel, TextLabel, TextLabel, TextButton)
 	local card = UIUtil.frame({
 		Size = UDim2.new(1, -8, 0, 56),
 		BackgroundColor3 = UIUtil.Colors.PanelLight,
@@ -101,7 +102,26 @@ local function tierCard(parent: Instance, order: number): (Frame, TextLabel, Tex
 	})
 	status.ZIndex = 23
 
-	return card, name, effect, cost, status
+	-- grey rebirth-LOCK cover (hidden unless the tier needs more rebirths). Clicking it
+	-- toasts the requirement. Sits ABOVE the card content so the tier reads "locked".
+	local cover = Instance.new("TextButton")
+	cover.Name = "Lock"
+	cover.Size = UDim2.new(1, 0, 1, 0)
+	cover.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+	cover.BackgroundTransparency = 0.45
+	cover.BorderSizePixel = 0
+	cover.AutoButtonColor = false
+	cover.Font = UIUtil.Font
+	cover.TextScaled = false
+	cover.TextSize = 22
+	cover.TextColor3 = Color3.fromRGB(235, 235, 240)
+	cover.Text = "🔒"
+	cover.ZIndex = 24
+	cover.Visible = false
+	cover.Parent = card
+	UIUtil.corner(cover, 12)
+
+	return card, name, effect, cost, status, cover
 end
 
 -- recolor a tier card by its state relative to the player's current level
@@ -141,8 +161,6 @@ end
 ------------------------------------------------------------------- generic panel
 -- Builds one upgrade panel from a list of Tiers. `getLevel(state)` reads the
 -- player's current tier from the snapshot; `remote` is the purchase remote.
--- Each tier carries its own currency, so the BUY button checks affordability
--- against Cash or Gems as appropriate and shows the matching icon.
 local function buildPanel(
 	gui: ScreenGui,
 	title: string,
@@ -155,15 +173,21 @@ local function buildPanel(
 
 	local cards: { Frame } = {}
 	local statuses: { TextLabel } = {}
+	local covers: { TextButton } = {}
 	for i = 1, maxLevel do
 		local tier = tiers[i]
-		local card, name, effect, cost, status = tierCard(modal.content, i)
+		local card, name, effect, cost, status, cover = tierCard(modal.content, i)
 		name.Text = ("%d. %s"):format(i, tier.name)
 		effect.Text = tier.effect
 		cost.Text = costText(tier.cost, tier.currency)
 		cost.TextColor3 = tier.currency == "Gems" and UIUtil.Colors.Gem or UIUtil.Colors.Good
+		-- clicking a rebirth-locked tier's cover explains the requirement
+		cover.MouseButton1Click:Connect(function()
+			Effects.toast("Locked", ("%d Rebirths needed"):format(tier.unlockRebirths), "Legendary")
+		end)
 		cards[i] = card
 		statuses[i] = status
+		covers[i] = cover
 	end
 
 	local btn = buyButton(modal.content, maxLevel + 1)
@@ -175,8 +199,11 @@ local function buildPanel(
 	ClientState.onChanged(function(state)
 		if not state then return end
 		local level = getLevel(state)
+		local rebirths = state.Rebirths or 0
 		for i = 1, maxLevel do
 			paintTier(cards[i], statuses[i], i, level)
+			-- show the grey cover on any tier the player lacks the rebirths to buy
+			covers[i].Visible = tiers[i].unlockRebirths > rebirths
 		end
 		if level >= maxLevel then
 			btn.Text = "MAX"
@@ -184,6 +211,12 @@ local function buildPanel(
 			return
 		end
 		local nextTier = tiers[level + 1]
+		-- next tier rebirth-locked? show the requirement instead of a price
+		if nextTier.unlockRebirths > rebirths then
+			btn.Text = ("🔒 %d Rebirths needed"):format(nextTier.unlockRebirths)
+			btn.BackgroundColor3 = UIUtil.Colors.PanelLight
+			return
+		end
 		local have = nextTier.currency == "Gems" and state.Gems or state.Cash
 		local affordable = have >= nextTier.cost
 		btn.Text = ("Buy %s  %s"):format(nextTier.name, costText(nextTier.cost, nextTier.currency))
@@ -199,7 +232,7 @@ local function buildPanel(
 end
 
 ------------------------------------------------------------------- tier sources
--- Shovel: 9 tiers from ShovelConfig (Cash 1-5, Gems 6-9), effect = dig multiplier.
+-- Shovel: 9 tiers from ShovelConfig (all Gems), effect = dig multiplier, rebirth-gated.
 local function shovelTiers(): { Tier }
 	local out: { Tier } = {}
 	for i = 1, ShovelConfig.MaxLevel do
@@ -209,13 +242,13 @@ local function shovelTiers(): { Tier }
 			effect = ("Dig x%s"):format(lvl.DigSpeedMult),
 			cost = lvl.Cost,
 			currency = lvl.Currency,
+			unlockRebirths = ShovelConfig.tierUnlockRebirths(i),
 		}
 	end
 	return out
 end
 
--- Incubator: 9 named tiers from UpgradeConfig.Incubator (Cash 1-5, Gems 6-9),
--- effect = incubation-time reduction.
+-- Incubator: 9 named tiers from UpgradeConfig.Incubator (all Gems), rebirth-gated.
 local function incubatorTiers(): { Tier }
 	local out: { Tier } = {}
 	for i = 1, UpgradeConfig.Incubator.MaxLevel do
@@ -225,12 +258,13 @@ local function incubatorTiers(): { Tier }
 			effect = ("-%d%% time"):format(math.floor(lvl.Reduction * 100)),
 			cost = lvl.Cost,
 			currency = lvl.Currency,
+			unlockRebirths = UpgradeConfig.incubatorTierUnlockRebirths(i),
 		}
 	end
 	return out
 end
 
--- Luck: 9 tiers from UpgradeConfig.Luck (all Gems), effect = +luck value.
+-- Luck: 9 tiers from UpgradeConfig.Luck (all Gems, no rebirth gate).
 local function luckTiers(): { Tier }
 	local out: { Tier } = {}
 	for i = 1, UpgradeConfig.Luck.MaxLevel do
@@ -240,6 +274,7 @@ local function luckTiers(): { Tier }
 			effect = ("+%d%% luck"):format(math.floor(lvl.Value * 100)),
 			cost = lvl.GemCost,
 			currency = "Gems",
+			unlockRebirths = 0,
 		}
 	end
 	return out

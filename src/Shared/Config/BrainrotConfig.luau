@@ -27,65 +27,101 @@ export type Brainrot = {
 
 local BrainrotConfig = {}
 
--- Per-tier income, expressed PER MINUTE (BrainrotMath divides by 60 for the 1s loop).
--- This is the single tier-based income table; variant multiplier, per-brainrot level
--- multiplier (1.2^(level-1)) and the rebirth multipliers are layered on in BrainrotMath.
+-- Per-tier income. CASH is PER SECOND (integer; the 1s loop adds it directly, no /60) and
+-- is scaled by variant/level/rebirth in BrainrotMath. GEMS are now a FIXED whole gems/SECOND
+-- per tier (NOT per-minute): no /60, no level scaling, no rebirth multiplier — a brainrot
+-- makes the same gems/sec forever. The variant adds a fixed flat gem/sec on top (VariantConfig).
+-- Cash ladder ratios sit between Gold x2.2 and Diamond x3.6 so Gold(N) < Normal(N+1) < Diamond(N).
+-- (Gem values are tunable starter values.)
 BrainrotConfig.TierIncome = {
-	Common    = { CashPerMin = 10,   GemPerMin = 0 },
-	Uncommon  = { CashPerMin = 35,   GemPerMin = 0 },
-	Rare      = { CashPerMin = 120,  GemPerMin = 1 },
-	Legendary = { CashPerMin = 500,  GemPerMin = 5 },
-	Mythic    = { CashPerMin = 2000, GemPerMin = 15 },
+	Common    = { CashPerSec = 7,   GemPerSec = 0 },
+	Uncommon  = { CashPerSec = 18,  GemPerSec = 1 },
+	Rare      = { CashPerSec = 46,  GemPerSec = 2 },
+	Epic      = { CashPerSec = 120, GemPerSec = 4 },
+	Legendary = { CashPerSec = 310, GemPerSec = 7 },
+	Mythic    = { CashPerSec = 900, GemPerSec = 12 }, -- no base-Mythic brainrots; safe fallback
 }
 
--- Per-brainrot leveling. Cap is 10; entry.level lives in 1..10 (default 1).
--- Costs are the BASE cost of reaching the target level, BEFORE the rebirth
--- levelCostMultiplier (1.5^rebirthCount) is applied. Currency: levels 2-5 = Cash,
--- levels 6-10 = Gems.
-BrainrotConfig.MaxLevel = 10
-BrainrotConfig.Levels = {
-	[2]  = { Cost = 200,   Currency = "Cash" },
-	[3]  = { Cost = 600,   Currency = "Cash" },
-	[4]  = { Cost = 1500,  Currency = "Cash" },
-	[5]  = { Cost = 3500,  Currency = "Cash" },
-	[6]  = { Cost = 500,   Currency = "Gems" },
-	[7]  = { Cost = 1200,  Currency = "Gems" },
-	[8]  = { Cost = 3000,  Currency = "Gems" },
-	[9]  = { Cost = 7500,  Currency = "Gems" },
-	[10] = { Cost = 18000, Currency = "Gems" },
-}
+-- Per-brainrot leveling. Cap is 30; entry.level lives in 1..30 (default 1).
+-- Leveling is CASH ONLY and raises ONLY the brainrot's cash/sec (its gem/sec is FIXED — see
+-- TierIncome). The cost to REACH each level grows smoothly (base * growth^(n-2), rounded to a
+-- tidy number) and is the SAME for every brainrot (tier-independent), so leveling pays off most
+-- on rarer brainrots. The rebirth levelCostMultiplier (1.5^rebirthCount) is layered on top in
+-- EconomyManager. (Tunable: MaxLevel / base / growth.)
+BrainrotConfig.MaxLevel = 30
+BrainrotConfig.Levels = {}
+do
+	local base = 150   -- cash cost to reach level 2
+	local growth = 1.4 -- each level costs ~40% more than the previous
+	local function nice(n: number): number
+		if n < 100 then
+			return math.floor(n / 5 + 0.5) * 5
+		end
+		local digits = math.floor(math.log(n) / math.log(10))
+		local mag = 10 ^ (digits - 1)
+		return math.floor(n / mag + 0.5) * mag
+	end
+	for lvl = 2, BrainrotConfig.MaxLevel do
+		BrainrotConfig.Levels[lvl] = { Cost = nice(base * growth ^ (lvl - 2)), Currency = "Cash" }
+	end
+end
+
+-- Roster of the imported "Animals" models (ServerStorage.BrainrotModels). Each entry's KEY
+-- must match the model name exactly so BrainrotFactory can clone the right model. Sorted into
+-- 5 base tiers by how advanced/rare each looks. Color is a fallback/label accent only (the real
+-- mesh is used); Scale grows with tier so rarer brainrots read bigger on the podium.
+local C_COMMON    = Color3.fromRGB(220, 224, 230)
+local C_UNCOMMON  = Color3.fromRGB(60, 230, 110)
+local C_RARE      = Color3.fromRGB(50, 150, 255)
+local C_EPIC      = Color3.fromRGB(160, 70, 235)
+local C_LEGENDARY = Color3.fromRGB(255, 175, 35)
 
 BrainrotConfig.Brainrots = {
 	---------------------------------------------------------------- COMMON
-	["Brr Brr Patapim"]      = { Tier = "Common",  BaseCash = 1,  BaseGem = 0,    Color = Color3.fromRGB(120, 200, 90),  Scale = 1.0 },
-	["Boneca Ambalabu"]      = { Tier = "Common",  BaseCash = 1,  BaseGem = 0,    Color = Color3.fromRGB(90, 180, 220),  Scale = 1.0 },
-	["Chimpanzini Bananini"] = { Tier = "Common",  BaseCash = 2,  BaseGem = 0,    Color = Color3.fromRGB(245, 215, 60),  Scale = 1.0 },
-	["Trippi Troppi"]        = { Tier = "Common",  BaseCash = 2,  BaseGem = 0,    Color = Color3.fromRGB(230, 120, 200), Scale = 1.0 },
-	["Frigo Camelo"]         = { Tier = "Common",  BaseCash = 3,  BaseGem = 0,    Color = Color3.fromRGB(150, 220, 235), Scale = 1.1 },
+	["Noobini Pizzanini"]    = { Tier = "Common", BaseCash = 0, BaseGem = 0, Color = C_COMMON, Scale = 1.0 },
+	["Tim Cheese"]           = { Tier = "Common", BaseCash = 0, BaseGem = 0, Color = C_COMMON, Scale = 1.0 },
+	["Svinina Bombardino"]   = { Tier = "Common", BaseCash = 0, BaseGem = 0, Color = C_COMMON, Scale = 1.0 },
+	["Ta Ta Ta Ta Sahur"]    = { Tier = "Common", BaseCash = 0, BaseGem = 0, Color = C_COMMON, Scale = 1.0 },
+	["Fluriflura"]           = { Tier = "Common", BaseCash = 0, BaseGem = 0, Color = C_COMMON, Scale = 1.0 },
+	["67"]                   = { Tier = "Common", BaseCash = 0, BaseGem = 0, Color = C_COMMON, Scale = 1.0 },
+	["Bananita Dolphinita"]  = { Tier = "Common", BaseCash = 0, BaseGem = 0, Color = C_COMMON, Scale = 1.05 },
+	["Talpa Di Fero"]        = { Tier = "Common", BaseCash = 0, BaseGem = 0, Color = C_COMMON, Scale = 1.05 },
 
 	---------------------------------------------------------------- UNCOMMON
-	["Cappuccino Assassino"] = { Tier = "Uncommon", BaseCash = 5,  BaseGem = 0,   Color = Color3.fromRGB(90, 60, 40),    Scale = 1.1 },
-	["Ballerina Cappuccina"] = { Tier = "Uncommon", BaseCash = 6,  BaseGem = 0,   Color = Color3.fromRGB(210, 150, 90),  Scale = 1.1 },
-	["Lirilì Larilà"]        = { Tier = "Uncommon", BaseCash = 7,  BaseGem = 0,   Color = Color3.fromRGB(120, 220, 180), Scale = 1.1 },
-	["Bombombini Gusini"]    = { Tier = "Uncommon", BaseCash = 8,  BaseGem = 0,   Color = Color3.fromRGB(160, 200, 80),  Scale = 1.15 },
+	["Trippi Troppi"]        = { Tier = "Uncommon", BaseCash = 0, BaseGem = 0, Color = C_UNCOMMON, Scale = 1.1 },
+	["Tung Tung Tung Sahur"] = { Tier = "Uncommon", BaseCash = 0, BaseGem = 0, Color = C_UNCOMMON, Scale = 1.1 },
+	["Chimpanzini Bananini"] = { Tier = "Uncommon", BaseCash = 0, BaseGem = 0, Color = C_UNCOMMON, Scale = 1.1 },
+	["Gangster Footera"]     = { Tier = "Uncommon", BaseCash = 0, BaseGem = 0, Color = C_UNCOMMON, Scale = 1.1 },
+	["Trulimero Trulicina"]  = { Tier = "Uncommon", BaseCash = 0, BaseGem = 0, Color = C_UNCOMMON, Scale = 1.1 },
+	["Bombombini Gusini"]    = { Tier = "Uncommon", BaseCash = 0, BaseGem = 0, Color = C_UNCOMMON, Scale = 1.15 },
+	["Chef Crabracadabra"]   = { Tier = "Uncommon", BaseCash = 0, BaseGem = 0, Color = C_UNCOMMON, Scale = 1.15 },
 
 	---------------------------------------------------------------- RARE
-	["Tung Tung Tung Sahur"] = { Tier = "Rare", BaseCash = 18, BaseGem = 0.05,    Color = Color3.fromRGB(150, 110, 70),  Scale = 1.25 },
-	["Bombardiro Crocodilo"] = { Tier = "Rare", BaseCash = 22, BaseGem = 0.06,    Color = Color3.fromRGB(70, 130, 60),   Scale = 1.3 },
-	["Tralalero Tralala"]    = { Tier = "Rare", BaseCash = 26, BaseGem = 0.08,    Color = Color3.fromRGB(60, 160, 230),  Scale = 1.3 },
+	["Blueberrinni Octopusini"] = { Tier = "Rare", BaseCash = 0, BaseGem = 0, Color = C_RARE, Scale = 1.2 },
+	["Boneca Ambalabu"]      = { Tier = "Rare", BaseCash = 0, BaseGem = 0, Color = C_RARE, Scale = 1.2 },
+	["Bandito Bobritto"]     = { Tier = "Rare", BaseCash = 0, BaseGem = 0, Color = C_RARE, Scale = 1.2 },
+	["Brr Brr Patapim"]      = { Tier = "Rare", BaseCash = 0, BaseGem = 0, Color = C_RARE, Scale = 1.25 },
+	["Cappuccino Assassino"] = { Tier = "Rare", BaseCash = 0, BaseGem = 0, Color = C_RARE, Scale = 1.2 },
+	["Ballerina Cappuccina"] = { Tier = "Rare", BaseCash = 0, BaseGem = 0, Color = C_RARE, Scale = 1.25 },
+	["Lirilì Larilà"]        = { Tier = "Rare", BaseCash = 0, BaseGem = 0, Color = C_RARE, Scale = 1.25 },
+
+	---------------------------------------------------------------- EPIC
+	["Bombardiro Crocodilo"] = { Tier = "Epic", BaseCash = 0, BaseGem = 0, Color = C_EPIC, Scale = 1.3 },
+	["Bambini Crostini"]     = { Tier = "Epic", BaseCash = 0, BaseGem = 0, Color = C_EPIC, Scale = 1.3 },
+	["Orangutini Ananassini"]= { Tier = "Epic", BaseCash = 0, BaseGem = 0, Color = C_EPIC, Scale = 1.3 },
+	["Tralalero Tralala"]    = { Tier = "Epic", BaseCash = 0, BaseGem = 0, Color = C_EPIC, Scale = 1.3 },
+	["Frigo Camelo"]         = { Tier = "Epic", BaseCash = 0, BaseGem = 0, Color = C_EPIC, Scale = 1.3 },
+	["Cocofanto Elefanto"]   = { Tier = "Epic", BaseCash = 0, BaseGem = 0, Color = C_EPIC, Scale = 1.35 },
+	["Brri Brri Bicus Dicus Bombicus"] = { Tier = "Epic", BaseCash = 0, BaseGem = 0, Color = C_EPIC, Scale = 1.35 },
 
 	---------------------------------------------------------------- LEGENDARY
-	["Trippa Troppa Tralala Lirili Rilà Tung Tung Sahur Boneca"] = {
-		Tier = "Legendary", BaseCash = 150, BaseGem = 0.25,
-		Color = Color3.fromRGB(255, 175, 35), Scale = 1.8,
-	},
-
-	---------------------------------------------------------------- MYTHIC (Zone 2+ exclusive, invented)
-	["Spaghettini Vesuviano"]          = { Tier = "Mythic", BaseCash = 320,  BaseGem = 0.5,  Color = Color3.fromRGB(255, 90, 60),   Scale = 1.6 },
-	["Cocco Locco Bombardino"]         = { Tier = "Mythic", BaseCash = 380,  BaseGem = 0.6,  Color = Color3.fromRGB(120, 70, 200),  Scale = 1.7 },
-	["Frulli Frulla Mortadella"]       = { Tier = "Mythic", BaseCash = 450,  BaseGem = 0.7,  Color = Color3.fromRGB(255, 70, 150),  Scale = 1.7 },
-	["Ananasso Tralaledino Supremo"]   = { Tier = "Mythic", BaseCash = 600,  BaseGem = 0.9,  Color = Color3.fromRGB(255, 220, 40),  Scale = 1.9 },
-	["Polpettone Galattico Crocofanto"]= { Tier = "Mythic", BaseCash = 850,  BaseGem = 1.2,  Color = Color3.fromRGB(80, 255, 230),  Scale = 2.0 },
+	["Burbaloni Loliloli"]   = { Tier = "Legendary", BaseCash = 0, BaseGem = 0, Color = C_LEGENDARY, Scale = 1.4 },
+	["Glorbo Fruttodrillo"]  = { Tier = "Legendary", BaseCash = 0, BaseGem = 0, Color = C_LEGENDARY, Scale = 1.4 },
+	["La Vacca Saturno Saturnita"] = { Tier = "Legendary", BaseCash = 0, BaseGem = 0, Color = C_LEGENDARY, Scale = 1.5 },
+	["Odin Din Din Dun"]     = { Tier = "Legendary", BaseCash = 0, BaseGem = 0, Color = C_LEGENDARY, Scale = 1.45 },
+	["Rhino Toasterino"]     = { Tier = "Legendary", BaseCash = 0, BaseGem = 0, Color = C_LEGENDARY, Scale = 1.45 },
+	["Graipuss Medussi"]     = { Tier = "Legendary", BaseCash = 0, BaseGem = 0, Color = C_LEGENDARY, Scale = 1.5 },
+	["Girafa Celestre"]      = { Tier = "Legendary", BaseCash = 0, BaseGem = 0, Color = C_LEGENDARY, Scale = 1.5 },
 }
 
 -- Returns a list of brainrot names belonging to a tier.
@@ -104,10 +140,10 @@ function BrainrotConfig.get(name: string)
 	return BrainrotConfig.Brainrots[name]
 end
 
--- Per-brainrot level multiplier (applies to BOTH cash and gems).
--- Level 1 = 1x; Level 10 = 1.2^9 = 5.16x.
+-- Per-brainrot level multiplier — applies to CASH ONLY (gem income is fixed; see BrainrotMath).
+-- Level 1 = 1x; Level 30 = 1.1^29 ≈ 15.9x.
 function BrainrotConfig.levelMult(level: number): number
-	return 1.2 ^ ((level or 1) - 1)
+	return 1.1 ^ ((level or 1) - 1)
 end
 
 -- BASE cost (and currency) to reach `targetLevel`, BEFORE rebirth scaling.
@@ -120,11 +156,12 @@ function BrainrotConfig.levelUpCost(targetLevel: number): (number, string)
 	return entry.Cost, entry.Currency
 end
 
--- Per-MINUTE base income for a tier (cash, gem), before variant/level/rebirth.
--- Unknown tiers fall back to Common.
-function BrainrotConfig.tierIncomePerMin(tier: string): (number, number)
+-- Base income for a tier, before variant/level/rebirth: returns
+-- (cashPerSecond, gemPerMinute). Cash is PER-SECOND (integer), gems PER-MINUTE
+-- (BrainrotMath divides only the gems by 60). Unknown tiers fall back to Common.
+function BrainrotConfig.tierIncome(tier: string): (number, number)
 	local income = BrainrotConfig.TierIncome[tier] or BrainrotConfig.TierIncome.Common
-	return income.CashPerMin, income.GemPerMin
+	return income.CashPerSec, income.GemPerSec
 end
 
 return BrainrotConfig

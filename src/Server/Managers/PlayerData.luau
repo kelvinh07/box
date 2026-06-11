@@ -14,6 +14,7 @@ local GameConfig = require(Shared.Config.GameConfig)
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
 local ShovelConfig = require(Shared.Config.ShovelConfig)
 local ZoneConfig = require(Shared.Config.ZoneConfig)
+local EggConfig = require(Shared.Config.EggConfig)
 local Net = require(Shared.Modules.Net)
 local Format = require(Shared.Modules.Format)
 
@@ -33,7 +34,7 @@ local function defaultProfile()
 	return {
 		Cash = GameConfig.StartingCash,
 		Gems = GameConfig.StartingGems,
-		LifetimeCash = 0,           -- Cash EARNED since last rebirth; resets on rebirth; drives milestone
+		LifetimeCash = 0,           -- CUMULATIVE cash ever earned; NEVER resets; gates rebirth (milestone)
 		Rebirths = 0,
 		GemMultiplier = 1,          -- derived from Rebirths: 1.5^Rebirths
 		CashMultiplier = 1,         -- derived from Rebirths: 1.2^Rebirths
@@ -90,7 +91,7 @@ local function reconcile(profile: any)
 	if typeof(profile.Eggs) ~= "table" then
 		profile.Eggs = def.Eggs
 	end
-	for _, r in ipairs({ "Common", "Uncommon", "Rare", "Legendary" }) do
+	for _, r in ipairs(EggConfig.Order) do
 		profile.Eggs[r] = profile.Eggs[r] or 0
 	end
 	if typeof(profile.Collection) ~= "table" then
@@ -195,11 +196,9 @@ function PlayerData.load(player: Player)
 		end
 	end
 
-	-- Clamp the current zone to what the player has unlocked.
-	local highest = ZoneConfig.highestUnlocked(profile.Rebirths)
-	if profile.CurrentZone > highest then
-		profile.CurrentZone = highest
-	end
+	-- CurrentZone is now the player's highest CASH-UNLOCKED zone (broken walls persist across
+	-- sessions; only a rebirth re-locks them by resetting this to 1). Just clamp it on load.
+	profile.CurrentZone = math.clamp(profile.CurrentZone or 1, 1, ZoneConfig.MaxZone)
 
 	cache[player] = profile
 	dirty[player] = false
@@ -262,7 +261,7 @@ function PlayerData.snapshot(player: Player): any?
 	-- TOTAL eggs held across all rarities + the rebirth-scaled capacity (for the
 	-- backpack UI cap line).
 	local eggCount = 0
-	for _, r in ipairs({ "Common", "Uncommon", "Rare", "Legendary" }) do
+	for _, r in ipairs(EggConfig.Order) do
 		eggCount += (p.Eggs[r] or 0)
 	end
 
@@ -279,7 +278,7 @@ function PlayerData.snapshot(player: Player): any?
 		ShovelLevel = p.ShovelLevel,
 		DigSpeedMult = ShovelConfig.digSpeedMult(p.ShovelLevel),
 		CurrentZone = p.CurrentZone,
-		HighestZone = ZoneConfig.highestUnlocked(p.Rebirths),
+		HighestZone = p.CurrentZone, -- highest CASH-unlocked zone (gates the teleport menu + walls)
 		MaxZone = ZoneConfig.MaxZone,
 		Plots = p.Plots,
 		MaxPlots = GameConfig.MaxPlots,
@@ -300,11 +299,11 @@ function PlayerData.snapshot(player: Player): any?
 		TotalLuck = UpgradeConfig.totalLuck(p.LuckLevel, p.Rebirths),
 		IncubatorReduction = UpgradeConfig.incubatorReduction(p.IncubatorLevel),
 		NextPlotCost = nextPlotCost,
-		RebirthGemCost = UpgradeConfig.gemCost(p.Rebirths),
 		RebirthMilestone = UpgradeConfig.cashMilestone(p.Rebirths),
-		RebirthReady = p.LifetimeCash >= UpgradeConfig.cashMilestone(p.Rebirths)
-			and p.Gems >= UpgradeConfig.gemCost(p.Rebirths)
-			and p.CurrentZone == ZoneConfig.highestUnlocked(p.Rebirths),
+		-- Rebirth is gated PURELY by cumulative LifetimeCash now (no gem cost, no zone check).
+		RebirthReady = p.LifetimeCash >= UpgradeConfig.cashMilestone(p.Rebirths),
+		-- Cash to break the wall into the NEXT zone (0 once at the last zone).
+		NextZoneCost = ZoneConfig.unlockCash(p.CurrentZone + 1),
 	}
 end
 

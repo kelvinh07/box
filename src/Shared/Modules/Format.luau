@@ -9,11 +9,10 @@ local SUFFIXES = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "
 function Format.short(n: number): string
 	n = n or 0
 	if n < 1000 then
-		-- show up to 1 decimal for fractional gem amounts, else whole number
-		if n ~= math.floor(n) then
-			return string.format("%.1f", n)
-		end
-		return tostring(math.floor(n))
+		-- sub-1000 values ALWAYS render as a whole integer (round half-up); no decimals.
+		-- Cash is already integer from BrainrotMath; this also cleans any fractional
+		-- value (e.g. a gem sub-total) so nothing ever shows "$0.2/s".
+		return tostring(math.floor(n + 0.5))
 	end
 	local idx = 1
 	while n >= 1000 and idx < #SUFFIXES do
@@ -24,6 +23,21 @@ function Format.short(n: number): string
 	local s = string.format("%.1f", n)
 	s = s:gsub("%.0$", "")
 	return s .. SUFFIXES[idx]
+end
+
+-- Whole number with thousands separators (e.g. 51800 -> "51,800"). Rounds half-up; no
+-- decimals. Used where the EXACT figure matters (e.g. the rebirth lifetime-cash requirement).
+function Format.comma(n: number): string
+	n = math.floor((n or 0) + 0.5)
+	local sign = ""
+	if n < 0 then
+		sign = "-"
+		n = -n
+	end
+	local s = tostring(n)
+	local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+	out = out:gsub("^,", "")
+	return sign .. out
 end
 
 -- mm:ss style countdown

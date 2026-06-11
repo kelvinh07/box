@@ -2,12 +2,16 @@
 -- VariantConfig
 -- Every brainrot can roll one of four variants. Variants are applied ON TOP of
 -- the TIER-BASED income (see BrainrotConfig.TierIncome):
---   FinalCash/min = tierCash * Variant.CashMult * levelMult * rebirthCashMult
---   FinalGem/min  = (tierGem + Variant.GemBonus) * levelMult * rebirthGemMult
+--   FinalCash/sec = round( tierCashPerSec * Variant.CashMult * levelMult * rebirthCashMult )
+--   FinalGem/min  = (tierGemPerMin + Variant.GemBonus) * levelMult * rebirthGemMult
 --
--- GemBonus is a flat PER-MINUTE gem amount the variant ADDS on top of the tier
--- base, so Gold/Diamond/Galaxy variants of ANY brainrot (even Commons) generate
--- gems. BrainrotMath divides the per-minute total by 60 for the 1s income loop.
+-- CASH is sourced per-second and the final cash/sec is rounded to a whole integer in
+-- BrainrotMath (NO /60 for cash). GemBonus is a flat PER-MINUTE gem amount the variant
+-- ADDS on top of the tier base, so Gold/Diamond/Galaxy variants of ANY brainrot (even
+-- Commons) generate gems; BrainrotMath divides ONLY the per-minute gem total by 60.
+--
+-- CashMults are tuned (Gold 2.2, Diamond 3.6) so Gold(N) < Normal(N+1) < Diamond(N)
+-- at every adjacent tier pair. Galaxy (x6) stays PARKED/unobtainable.
 --
 -- Variant roll odds are WEIGHTS (not %). They get nudged by Luck (see DiggingManager).
 
@@ -20,25 +24,25 @@ VariantConfig.Order = { "Normal", "Gold", "Diamond", "Galaxy" } :: { string }
 VariantConfig.Variants = {
 	Normal = {
 		CashMult = 1,
-		GemBonus = 0,    -- gems/min added on top of tier base
+		GemBonus = 0,    -- FIXED gems/sec added on top of the tier base (no level/rebirth scaling)
 		Weight   = 80,   -- 80%
 		Glow     = false,
 	},
 	Gold = {
-		CashMult = 3,
-		GemBonus = 1,    -- gems/min added on top of tier base
+		CashMult = 2.2,
+		GemBonus = 1,    -- FIXED gems/sec added on top of the tier base
 		Weight   = 15,   -- 15%
 		Glow     = true,
 	},
 	Diamond = {
-		CashMult = 8,
-		GemBonus = 3,    -- gems/min added on top of tier base
+		CashMult = 3.6,
+		GemBonus = 2,    -- FIXED gems/sec added on top of the tier base
 		Weight   = 4,    -- 4%
 		Glow     = true,
 	},
 	Galaxy = {
-		CashMult = 25,
-		GemBonus = 8,    -- gems/min added on top of tier base
+		CashMult = 6,
+		GemBonus = 4,    -- FIXED gems/sec added on top of the tier base
 		Weight   = 1,    -- 1%
 		Glow     = true,
 		Rainbow  = true,

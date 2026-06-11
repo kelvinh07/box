@@ -48,7 +48,7 @@ MapBuilder.DigCenter = Vector3.new(0, 0, 0)
 local function setupSky()
 	Lighting.Brightness = 4
 	Lighting.Ambient = Color3.fromRGB(80, 80, 80)
-	Lighting.OutdoorAmbient = Color3.fromRGB(120, 140, 100)
+	Lighting.OutdoorAmbient = Color3.fromRGB(150, 140, 150)
 	Lighting.ClockTime = 14
 	Lighting.ExposureCompensation = 0.1
 	Lighting.ColorShift_Top = Color3.fromRGB(255, 250, 242) -- subtle warm-white (toned down — full warm was too yellow)
@@ -106,9 +106,9 @@ local function buildClouds(folder: Folder)
 	clouds.Name = "Clouds"
 	clouds.Parent = folder
 	local rng = Random.new(1337)
-	for _ = 1, 16 do
+	for _ = 1, 28 do
 		local cx = rng:NextNumber(-360, 360)
-		local cz = rng:NextNumber(-220, 540)
+		local cz = rng:NextNumber(-220, 1150) -- span the full 8-zone lane
 		local cy = rng:NextNumber(120, 180)
 		for _ = 1, rng:NextInteger(3, 5) do
 			makePart({
@@ -138,11 +138,13 @@ function MapBuilder.build()
 	-- big bright STUDDED grass ground (classic stud texture, like dirt/walls/bases). Tagged
 	-- GrassSurface so Client/GrassChecker overlays the 6x6 two-green checker ON TOP of the
 	-- studs (the studs still read through the overlay).
+	-- sized + centered to span the lobby (z ~ -250) down the full 8-zone lane (z ~ 1120).
+	-- Grow this whenever ZoneConfig.MaxZone / BaseManager.LANE_SIDE_PLANNED_ZONES grow.
 	local ground = makePart({
 		Name = "Ground",
-		Size = Vector3.new(1200, 2, 1200),
+		Size = Vector3.new(1200, 2, 1700),
 		Color = Palette.Grass,
-		CFrame = CFrame.new(0, 0, 200),
+		CFrame = CFrame.new(0, 0, 435),
 		Parent = folder,
 	})
 	CollectionService:AddTag(ground, "GrassSurface")
@@ -157,7 +159,7 @@ function MapBuilder.build()
 	spawn.Size = Vector3.new(14, 1, 14)
 	spawn.Transparency = 1
 	spawn.Material = Enum.Material.Plastic
-	spawn.CFrame = CFrame.new(0, 0.5, -70) -- top sits at y=1, flush with the ground
+	spawn.CFrame = CFrame.new(0, 0.5, -100) -- top sits at y=1, flush with the ground (kept with the shop cluster, clear of the enlarged dig site)
 	spawn.Neutral = true
 	spawn.Parent = folder
 

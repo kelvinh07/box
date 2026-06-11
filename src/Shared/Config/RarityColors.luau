@@ -10,8 +10,9 @@ RarityColors.Tier = {
 	Common    = Color3.fromRGB(220, 224, 230), -- white/gray
 	Uncommon  = Color3.fromRGB(60, 230, 110),  -- bold green
 	Rare      = Color3.fromRGB(50, 150, 255),  -- electric blue
+	Epic      = Color3.fromRGB(160, 70, 235),  -- purple (Epic egg + Epic tier)
 	Legendary = Color3.fromRGB(255, 175, 35),  -- gold/orange
-	Mythic    = Color3.fromRGB(255, 70, 150),  -- hot pink (zone 2+ exclusive tier)
+	Mythic    = Color3.fromRGB(255, 45, 45),   -- RED (Mythic egg)
 }
 
 -- Variant colors (applied on top of any brainrot)

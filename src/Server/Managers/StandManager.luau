@@ -1,22 +1,22 @@
 --!strict
 -- StandManager
--- Three SHARED upgrade SHOPS placed next to the lobby-center spawn pad. Each carries an
--- INSTANT ProximityPrompt (press E, no hold) with a `StandType` attribute the CLIENT reads
--- to open the matching upgrade panel — there is NO server-side open handler (opening is UI).
+-- Builds the central OPEN-AIR WOODEN SHOP in the middle plaza: a pavilion (no walls — airflow)
+-- with a raised plank FLOOR, 4 corner PILLARS, top eave beams + corner braces, and a HIP ROOF.
+-- It faces +Z (toward the dig lane / zone walls). Inside it stations two upgrade vendors and a
+-- back row of daily-reward / robux features:
+--   • LEFT  (-X) : 🪓 Shovel vendor   -> StandType "Shovel"
+--   • RIGHT (+X) : 🔥 Incubator vendor -> StandType "Incubator"
+--   • BACK  (-Z) : 🎁 Daily Reward + 💎 Robux Shop (VISUAL placeholders — extend later)
 --
---   🪓 Shovel    (Cash)  — speeds up digging       -> StandType "Shovel"
---   🔥 Incubator (Gems)  — shortens hatch timers    -> StandType "Incubator"
---   🍀 Luck      (Gems)  — better dig rarity odds    -> StandType "Luck"
+-- The VENDORS are JUST the character extracted from the imported ServerStorage.ShopModel (the
+-- market-stall shed is discarded) plus an INSTANT ProximityPrompt (press E, no hold) carrying a
+-- `StandType` attribute the CLIENT reads to open the matching upgrade panel — there is NO
+-- server-side open handler (opening is UI). If ShopModel is missing, a procedural bacon-hair
+-- vendor is used instead. Idempotent: init() rebuilds the Stands folder each call.
 --
--- Each shop is a CLONE of the imported model at ServerStorage.ShopModel (security-audited,
--- scripts stripped), scaled + stood on the ground, with its built-in floating title
--- retitled to the stand name and its white/blue recolored per stand (shop 1 keeps
--- white+blue, shop 2 = red+purple, shop 3 = purple+black). If ServerStorage.ShopModel is
--- absent (e.g. a place built from src that doesn't ship it), it falls back to a procedural
--- booth + bacon-hair vendor. Idempotent: init() rebuilds the Stands folder each call.
---
--- NOTE: ServerStorage.ShopModel is NOT in src/ (it's an imported mesh). To ship it in a
--- `rojo build`, save it to a .rbxmx under src/ and map it in default.project.json.
+-- TEXTURE: every wood part uses the world's CLASSIC STUDS+INLETS overlay (Surface.applyStuds via
+-- the default Plastic material) in BROWN wood colours — matching the rest of the build, NOT the
+-- smooth WoodPlanks material.
 
 local Workspace = game:GetService("Workspace")
 local ServerStorage = game:GetService("ServerStorage")
@@ -28,79 +28,30 @@ local Surface = require(ReplicatedStorage.Shared.Modules.Surface)
 local StandManager = {}
 
 local STANDS_FOLDER_NAME = "Stands"
+local SHOP_MODEL_NAME = "ShopModel" -- imported model we pull the vendor CHARACTER out of
 
--- The shop MODEL template lives in ServerStorage.ShopModel — the user's imported model,
--- SECURITY-AUDITED clean (no malicious code) and with its scripts stripped. buildStand
--- clones it per stand. If it's missing (e.g. a place built from src that doesn't ship the
--- model), buildStand falls back to the procedural booth so the game still works.
-local SHOP_MODEL_NAME = "ShopModel"
-local SHOP_TARGET_H = 12 -- the model is scaled so it stands ~this tall
--- the procedural-fallback floating title only shows within this many studs
-local TITLE_MAX_DIST = 32
+-- ===================== OPEN PAVILION (central shop) =====================
+-- Centered on PAV_CX/PAV_CZ in the parted-plot plaza, FRONT (open, +Z) toward the dig lane.
+-- Footprint clears the side plots (nearest inner-plot corner ~x74) and the lobby wall behind
+-- (~z-235). Floor is a raised plank platform; the structure is otherwise OPEN (airflow).
+local PAV_CX = 0
+local PAV_CZ = -175 -- pavilion center Z (pushed back near the terrace/lobby wall ~z-236; the tall eave keeps the back roof prow above the wall top so it tucks right up to it)
+local PAV_HALF_W = 44 -- floor half-width (X) -> 88 wide (bigger shop — more width)
+local PAV_HALF_L = 36 -- floor half-length (Z) -> 72 long (bigger shop — a bit more length)
+local FLOOR_TOP = 2 -- raised floor TOP Y (1-stud step up from the ground)
+local EAVE_Y = 34 -- pillar top / roof eave height (longer pillars -> raised ceiling + higher roof)
+local ROOF_OVERHANG = 3 -- roof eave extends this far past the floor edge
+local PILLAR_INSET = 1.5 -- pillars sit this far in from the floor corners
+-- SHINGLE-ROW HIP ROOF: a 4-sided hip of even horizontal shingle courses (alternating brown bands).
+local ROOF_RISE = 20 -- apex height above the eave (lower = broader/flatter roof)
 
--- the imported shop's two recolorable base colours (sampled from the model: a near-white
--- and the classic bright-blue). recolorShop remaps these; wood / NPC / grey are left alone.
-local SHOP_WHITE = Color3.fromRGB(191, 179, 184)
-local SHOP_BLUE = Color3.fromRGB(13, 105, 172)
+-- BROWN WOOD colours (Plastic material -> Surface.applyStuds gives the studs+inlets look)
+local WOOD_MED = Palette.Fence -- warm brown: floor + roof panels (#B06430)
+local WOOD_DARK = Palette.TreeTrunk -- dark brown: pillars / beams / rafters (#784A2C)
 
-local function colorClose(a: Color3, b: Color3): boolean
-	return math.abs(a.R - b.R) < 0.06 and math.abs(a.G - b.G) < 0.06 and math.abs(a.B - b.B) < 0.06
-end
-
--- remap the shop's WHITE parts -> `primary` and BLUE parts -> `secondary`.
-local function recolorShop(model: Model, primary: Color3, secondary: Color3)
-	for _, d in ipairs(model:GetDescendants()) do
-		if d:IsA("BasePart") then
-			if colorClose(d.Color, SHOP_WHITE) then
-				d.Color = primary
-			elseif colorClose(d.Color, SHOP_BLUE) then
-				d.Color = secondary
-			end
-		end
-	end
-end
-
--- set the shop model's built-in floating title (the ShopGui BillboardGui's TextLabel).
-local function setShopTitle(model: Model, text: string)
-	for _, d in ipairs(model:GetDescendants()) do
-		if d:IsA("TextLabel") and d:FindFirstAncestorWhichIsA("BillboardGui") then
-			d.Text = text
-		end
-	end
-end
-
--- a fresh CLONE of the imported shop template (anchored), or nil if it isn't present.
-local function getShopTemplate(): Model?
-	local tmpl = ServerStorage:FindFirstChild(SHOP_MODEL_NAME)
-	if tmpl and tmpl:IsA("Model") then
-		local clone = tmpl:Clone()
-		for _, d in ipairs(clone:GetDescendants()) do
-			if d:IsA("BasePart") then
-				d.Anchored = true
-			end
-		end
-		return clone
-	end
-	return nil
-end
-
--- The lobby-center spawn pad sits at world (0, 1.6, -70) (a 14x14 neon square). The
--- ground part top is Y=1 (ground center 0, size 2). Stands sit ON the ground (Y=1),
--- arced around the spawn pad but clear of it. NOTE: there is NO base at x=0 — the ring
--- has MAX_SLOTS=10 (even), so the two center-most bases straddle x=0 at roughly
--- (+/-40.4, -195.9), with their OPEN FRONTS reaching INWARD to about z=-150. The
--- stand cluster here only reaches to z=-96 (the HatchSpeed NPC), clearing those base
--- fronts by ~55 studs. KEEP the stands' -Z extent above ~z=-150 or you will push them
--- into the slot-1/2 buildings. +Z is "toward the courtyard / dig lane"; NPCs face that way.
-local SC = Vector3.new(0, 0, -70)
-local GROUND_TOP = 1
--- Safe back limit: the nearest base fronts sit near z=-150 (see note above), so the
--- stand cluster must stay clear of (i.e. greater than) this Z.
-local NEAREST_BASE_FRONT_Z = -150
-
--- Build an anchored part with the classic studded legoish look (Surface.applyStuds
--- overlays the real Roblox studs texture on every face). Glow/glass/wood/see-through
--- parts auto-skip; pass `NoStuds = true` to force-skip (e.g. the NPC avatar limbs).
+-- Build an anchored part with the classic studded legoish look (Surface.applyStuds overlays the
+-- real Roblox studs texture on every face). Default material is Plastic so wood gets STUDDED.
+-- Glow/glass/see-through parts auto-skip; pass NoStuds=true to force-skip (e.g. NPC limbs, glow).
 local function makePart(props: { [string]: any }): BasePart
 	local p = Instance.new("Part")
 	p.Anchored = true
@@ -117,84 +68,110 @@ local function makePart(props: { [string]: any }): BasePart
 	return p
 end
 
------------------------------------------------------------------ bacon-hair NPC
--- A procedural classic R6 avatar: yellow skin (head/arms/legs), a shirt-colored
--- torso, two tiny black eyes on the head front, and the iconic reddish-brown
--- "Bacon Hair" — a few angled wedge tufts stacked on the head pointing BACK.
--- Built in LOCAL space facing local +Z (eyes on +Z), torso centered at the origin,
--- then PivotTo(cf) is applied by the caller. PrimaryPart = torso.
+-- A box beam spanning p1..p2 (square cross-section `thick`), studded. Used for rafters/braces.
+local function beam(p1: Vector3, p2: Vector3, thick: number, color: Color3, parent: Instance, name: string?): BasePart
+	local len = (p2 - p1).Magnitude
+	return makePart({
+		Name = name or "Beam",
+		Size = Vector3.new(thick, thick, len),
+		Color = color,
+		CFrame = CFrame.lookAt((p1 + p2) / 2, p2),
+		Parent = parent,
+	})
+end
+
+-- Build one ROOF SLOPE as even horizontal SHINGLE COURSES between an eave edge (eL..eR) and the
+-- apex. Each course is a FLAT axis-aligned plank (so the studs tile cleanly); courses are coplanar
+-- (one flat slope), taper toward the apex (the hip), and alternate colour like real shingles. Basis
+-- is derived from geometry (no slope-sign guesswork); `normal` is forced to point up/out.
+local function buildSlopeShingles(eL: Vector3, eR: Vector3, apex: Vector3, parent: Instance)
+	local eaveMid = (eL + eR) / 2
+	local eaveVec = eR - eL
+	local eaveLen = eaveVec.Magnitude
+	local eaveDir = eaveVec.Unit
+	local up = apex - eaveMid
+	local upLen = up.Magnitude
+	local normal = eaveDir:Cross(up).Unit
+	if normal.Y < 0 then
+		normal = -normal
+	end
+	local N = 7
+	local rowDepth = upLen / N + 1.8 -- slight overlap between courses
+	for i = 0, N - 1 do
+		local tc = (i + 0.5) / N
+		local rowLen = math.max(eaveLen * (1 - tc), 2)
+		makePart({
+			Name = "Shingle",
+			Size = Vector3.new(rowLen, 1, rowDepth),
+			Color = (i % 2 == 0) and WOOD_MED or WOOD_DARK,
+			CFrame = CFrame.fromMatrix(eaveMid + up * tc, eaveDir, normal),
+			Parent = parent,
+		})
+	end
+end
+
+-- A camera-facing FredokaOne label floating at a world point (vendor name tags).
+local function floatingLabel(text: string, pos: Vector3, parent: Instance, width: number?): BasePart
+	local anchor = makePart({ Name = "Label", Size = Vector3.new(1, 1, 1), Transparency = 1, CanCollide = false, NoStuds = true, CFrame = CFrame.new(pos), Parent = parent })
+	local bb = Instance.new("BillboardGui")
+	bb.Size = UDim2.new(0, width or 200, 0, 46)
+	bb.AlwaysOnTop = true
+	bb.MaxDistance = 80
+	bb.Parent = anchor
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.FredokaOne
+	lbl.TextScaled = true
+	lbl.Text = text
+	lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+	lbl.TextStrokeTransparency = 0
+	lbl.Parent = bb
+	return anchor
+end
+
+-- A wood SIGN BOARD with the text rendered ON the wood (SurfaceGui), same style as the plot
+-- name-plates. `faceDir` is which way (+Z/-Z) the text should read toward. Studded brown board.
+local function woodSign(text: string, size: Vector3, pos: Vector3, faceDir: number, parent: Instance): BasePart
+	local board = makePart({ Name = "SignBoard", Size = size, Color = WOOD_DARK, CFrame = CFrame.new(pos), Parent = parent })
+	local sg = Instance.new("SurfaceGui")
+	sg.Name = "SignGui"
+	sg.Face = faceDir >= 0 and Enum.NormalId.Back or Enum.NormalId.Front -- +Z face = Back, -Z face = Front
+	sg.CanvasSize = Vector2.new(1000, 220)
+	sg.LightInfluence = 0
+	sg.Parent = board
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.FredokaOne
+	lbl.TextScaled = true
+	lbl.Text = text
+	lbl.TextColor3 = Color3.fromRGB(120, 220, 255)
+	lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	lbl.TextStrokeTransparency = 0.3
+	lbl.Parent = sg
+	return board
+end
+
+----------------------------------------------------------------- bacon-hair NPC (fallback vendor)
 local SKIN = Color3.fromRGB(245, 205, 48)
 local BACON = Color3.fromRGB(122, 73, 42)
 
-local function buildBaconNPC(cf: CFrame, parent: Instance, namePrefix: string): Model
+local function buildBaconNPC(parent: Instance, namePrefix: string): Model
 	local model = Instance.new("Model")
 	model.Name = ("%sVendor"):format(namePrefix)
-
-	-- Torso (PrimaryPart) centered at local origin. R6 torso = 2 x 2 x 1.
-	local torso = makePart({
-		Name = "Torso",
-		Size = Vector3.new(2, 2, 1),
-		Color = Palette.BaseFloor, -- vibrant blue-gray "shirt" color
-		CanCollide = false,
-		NoStuds = true, -- avatars stay smooth
-		CFrame = CFrame.new(0, 0, 0),
-		Parent = model,
-	})
+	local torso = makePart({ Name = "Torso", Size = Vector3.new(2, 2, 1), Color = Palette.BaseFloor, CanCollide = false, NoStuds = true, CFrame = CFrame.new(0, 0, 0), Parent = model })
 	model.PrimaryPart = torso
-
-	-- Head (~2 x 1 x 1) sits on top of the torso.
-	local head = makePart({
-		Name = "Head",
-		Size = Vector3.new(2, 1, 1),
-		Color = SKIN,
-		CanCollide = false,
-		NoStuds = true,
-		CFrame = CFrame.new(0, 1.5, 0),
-		Parent = model,
-	})
-
-	-- two tiny black eyes on the head FRONT (local +Z face).
+	local head = makePart({ Name = "Head", Size = Vector3.new(2, 1, 1), Color = SKIN, CanCollide = false, NoStuds = true, CFrame = CFrame.new(0, 1.5, 0), Parent = model })
 	for _, sx in ipairs({ -1, 1 }) do
-		makePart({
-			Name = "Eye",
-			Size = Vector3.new(0.18, 0.22, 0.12),
-			Color = Color3.fromRGB(15, 15, 15),
-			CanCollide = false,
-			NoStuds = true,
-			CFrame = head.CFrame * CFrame.new(sx * 0.32, 0.1, 0.52),
-			Parent = model,
-		})
+		makePart({ Name = "Eye", Size = Vector3.new(0.18, 0.22, 0.12), Color = Color3.fromRGB(15, 15, 15), CanCollide = false, NoStuds = true, CFrame = head.CFrame * CFrame.new(sx * 0.32, 0.1, 0.52), Parent = model })
+		makePart({ Name = "Arm", Size = Vector3.new(1, 2, 1), Color = SKIN, CanCollide = false, NoStuds = true, CFrame = CFrame.new(sx * 1.5, 0, 0), Parent = model })
+		makePart({ Name = "Leg", Size = Vector3.new(1, 2, 1), Color = SKIN, CanCollide = false, NoStuds = true, CFrame = CFrame.new(sx * 0.5, -2, 0), Parent = model })
 	end
-
-	-- Arms (1 x 2 x 1) flank the torso; Legs (1 x 2 x 1) below it.
-	for _, sx in ipairs({ -1, 1 }) do
-		makePart({
-			Name = "Arm",
-			Size = Vector3.new(1, 2, 1),
-			Color = SKIN,
-			CanCollide = false,
-			NoStuds = true,
-			CFrame = CFrame.new(sx * 1.5, 0, 0),
-			Parent = model,
-		})
-		makePart({
-			Name = "Leg",
-			Size = Vector3.new(1, 2, 1),
-			Color = SKIN,
-			CanCollide = false,
-			NoStuds = true,
-			CFrame = CFrame.new(sx * 0.5, -2, 0),
-			Parent = model,
-		})
-	end
-
-	-- BACON HAIR: reddish-brown wedge tufts on top of the head, sweeping toward the
-	-- BACK (local -Z). A few stacked/angled wedges approximate the classic "Pal Hair".
 	local hairTufts = {
 		{ size = Vector3.new(1.2, 0.9, 1.0), lz = -0.15, ly = 0.7, tilt = -0.25 },
 		{ size = Vector3.new(1.0, 0.8, 1.0), lz = -0.85, ly = 0.55, tilt = -0.55 },
 		{ size = Vector3.new(0.85, 0.7, 0.9), lz = -1.45, ly = 0.3, tilt = -0.85 },
-		{ size = Vector3.new(0.7, 0.6, 0.8), lz = -1.9, ly = 0.0, tilt = -1.05 },
 	}
 	for i, t in ipairs(hairTufts) do
 		local wedge = Instance.new("WedgePart")
@@ -204,132 +181,181 @@ local function buildBaconNPC(cf: CFrame, parent: Instance, namePrefix: string): 
 		wedge.Material = Enum.Material.Plastic
 		wedge.Color = BACON
 		wedge.Size = t.size
-		-- WedgePart slopes down toward +Z; rotate 180° about Y so the slope sweeps to
-		-- the BACK (-Z), then tilt back a touch for the layered bacon look.
-		wedge.CFrame = head.CFrame
-			* CFrame.new(0, t.ly, t.lz)
-			* CFrame.Angles(t.tilt, math.pi, 0)
+		wedge.CFrame = head.CFrame * CFrame.new(0, t.ly, t.lz) * CFrame.Angles(t.tilt, math.pi, 0)
 		wedge.Parent = model
 	end
-
 	model.Parent = parent
-	model:PivotTo(cf)
 	return model
 end
 
------------------------------------------------------------------ a stand booth
--- A chunky booth: a counter/base block, a back signboard, and a colored awning on
--- top, plus a floating title and an INSTANT ProximityPrompt on the front counter.
--- `face` is the world point the booth/NPC look toward (the courtyard, +Z).
-local function buildStand(
-	standType: string,
-	title: string,
-	accent: Color3,
-	primary: Color3?,
-	secondary: Color3?,
-	groundPos: Vector3,
-	parent: Instance
-)
+-- A fresh CLONE of the imported shop template (anchored), or nil if absent.
+local function getShopTemplate(): Model?
+	local tmpl = ServerStorage:FindFirstChild(SHOP_MODEL_NAME)
+	if tmpl and tmpl:IsA("Model") then
+		return tmpl:Clone()
+	end
+	return nil
+end
+
+----------------------------------------------------------------- a vendor (character + prompt only)
+-- Stations ONLY the vendor CHARACTER (extracted from ShopModel, shed discarded) standing on the
+-- floor facing +Z, with a name tag and an INSTANT StandType ProximityPrompt. No stall/booth.
+local function buildVendor(standType: string, title: string, pos: Vector3, parent: Instance)
 	local folder = Instance.new("Folder")
 	folder.Name = ("%sStand"):format(standType)
 	folder.Parent = parent
 
-	-- orient so the FRONT (local +Z, the counter/prompt side) faces the courtyard.
-	local facePoint = Vector3.new(groundPos.X, groundPos.Y, groundPos.Z + 20)
-	local base = CFrame.lookAt(groundPos, facePoint)
-
-	-- the part the ProximityPrompt lives on (the shop's front, or the booth counter)
-	local promptParent: BasePart
-	-- whether the shop model supplied its OWN floating title (so we don't add a second one)
-	local modelTitled = false
-
+	local vendor: Model? = nil
 	local shop = getShopTemplate()
 	if shop then
-		-- IMPORTED shop model: scale to ~SHOP_TARGET_H, stand on the ground at groundPos, face +Z.
-		shop.Name = "Shop"
-		local _, s0 = shop:GetBoundingBox()
-		if s0.Y > 0.01 then
-			pcall(function() shop:ScaleTo(SHOP_TARGET_H / s0.Y) end)
+		local npc = shop:FindFirstChild("Npc")
+		if npc and npc:IsA("Model") then
+			npc.Parent = folder -- pull the CHARACTER out; discard the rest of the shed
+			for _, d in ipairs(npc:GetDescendants()) do
+				if d:IsA("BasePart") then
+					d.Anchored = true
+					d.CanCollide = false
+				end
+			end
+			local hum = npc:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None -- no name/health bars
+			end
+			vendor = npc
 		end
-		shop:PivotTo(base) -- pivot to groundPos, facing +Z
-		local cf, sz = shop:GetBoundingBox()
-		shop:PivotTo(shop:GetPivot() + Vector3.new(0, GROUND_TOP - (cf.Y - sz.Y / 2), 0)) -- drop onto the ground
-		-- per-stand recolor (nil colours => keep the original white/blue, e.g. the first shop)
-		if primary and secondary then
-			recolorShop(shop, primary, secondary)
-		end
-		-- retitle the model's OWN floating title to the stand name it replaces
-		setShopTitle(shop, standType:upper())
-		modelTitled = true
-		shop.Parent = folder
-		-- invisible interaction block at the front so the E prompt always works
-		promptParent = makePart({
-			Name = "Interact",
-			Size = Vector3.new(7, 5, 2),
-			Transparency = 1,
-			CanCollide = false,
-			NoStuds = true,
-			CFrame = base * CFrame.new(0, GROUND_TOP + 2.5, 3),
-			Parent = folder,
-		})
-	else
-		-- PROCEDURAL fallback booth (counter / sign / posts / awning) + bacon vendor.
-		promptParent = makePart({
-			Name = "Counter",
-			Size = Vector3.new(8, 4, 2.5),
-			Color = accent,
-			Material = Enum.Material.WoodPlanks,
-			CFrame = base * CFrame.new(0, GROUND_TOP + 2, 0),
-			Parent = folder,
-		})
-		makePart({ Name = "Sign", Size = Vector3.new(8.5, 5, 0.6), Color = Palette.BaseFloor, Material = Enum.Material.WoodPlanks, CFrame = base * CFrame.new(0, GROUND_TOP + 7, -3.2), Parent = folder })
-		for _, sx in ipairs({ -1, 1 }) do
-			makePart({ Name = "Post", Size = Vector3.new(0.6, 9, 0.6), Color = Palette.BaseTrim, Material = Enum.Material.Wood, CFrame = base * CFrame.new(sx * 4, GROUND_TOP + 4.5, 0.8), Parent = folder })
-		end
-		makePart({ Name = "Awning", Size = Vector3.new(9.5, 0.5, 5), Color = accent, Material = Enum.Material.Fabric, CFrame = base * CFrame.new(0, GROUND_TOP + 9, 0.6) * CFrame.Angles(math.rad(-18), 0, 0), Parent = folder })
-		local npcPos = Vector3.new(groundPos.X, GROUND_TOP + 3, groundPos.Z - 4)
-		buildBaconNPC(CFrame.lookAt(npcPos, Vector3.new(npcPos.X, npcPos.Y, npcPos.Z + 20)), folder, standType)
+		shop:Destroy()
 	end
-
-	-- floating title (PROCEDURAL fallback ONLY — the imported shop model carries its own
-	-- ShopGui title, already retitled above). Visible within TITLE_MAX_DIST studs.
-	if not modelTitled then
-		local titlePart = makePart({
-			Name = "Title",
-			Size = Vector3.new(1, 1, 1),
-			Transparency = 1,
-			CanCollide = false,
-			NoStuds = true,
-			CFrame = base * CFrame.new(0, GROUND_TOP + 12, 0),
-			Parent = folder,
-		})
-		local bb = Instance.new("BillboardGui")
-		bb.Size = UDim2.new(0, 190, 0, 44)
-		bb.AlwaysOnTop = true
-		bb.MaxDistance = TITLE_MAX_DIST
-		bb.Parent = titlePart
-		local lbl = Instance.new("TextLabel")
-		lbl.Size = UDim2.fromScale(1, 1)
-		lbl.BackgroundTransparency = 1
-		lbl.Font = Enum.Font.FredokaOne
-		lbl.TextScaled = true
-		lbl.Text = title
-		lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-		lbl.TextStrokeTransparency = 0
-		lbl.Parent = bb
+	if not vendor then
+		vendor = buildBaconNPC(folder, standType)
 	end
+	local v = vendor :: Model
+	v.Name = ("%sVendor"):format(standType)
 
-	-- INSTANT ProximityPrompt; the client reads StandType to open the matching panel.
+	-- orient facing +Z (toward the courtyard / incoming players), then drop feet onto the floor.
+	local flat = Vector3.new(pos.X, 0, pos.Z)
+	v:PivotTo(CFrame.lookAt(flat, flat + Vector3.new(0, 0, 10)))
+	local cf, sz = v:GetBoundingBox()
+	v:PivotTo(v:GetPivot() + Vector3.new(0, FLOOR_TOP - (cf.Y - sz.Y / 2), 0))
+
+	-- name tag above the head
+	floatingLabel(title, Vector3.new(pos.X, FLOOR_TOP + sz.Y + 1.6, pos.Z), folder, 200)
+
+	-- invisible interact volume + instant prompt (client opens the panel off StandType)
+	local interact = makePart({ Name = "Interact", Size = Vector3.new(6, 7, 5), Transparency = 1, CanCollide = false, NoStuds = true, CFrame = CFrame.new(pos.X, FLOOR_TOP + 3.5, pos.Z), Parent = folder })
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "OpenPrompt"
 	prompt.ActionText = "Open"
 	prompt.ObjectText = title
 	prompt.HoldDuration = 0
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
-	prompt.MaxActivationDistance = 10
+	prompt.MaxActivationDistance = 11
 	prompt.RequiresLineOfSight = false
 	prompt:SetAttribute("StandType", standType)
-	prompt.Parent = promptParent
+	prompt.Parent = interact
+end
+
+----------------------------------------------------------------- back features (placeholders)
+local function buildDailyReward(parent: Instance)
+	local cx, cz = PAV_CX - PAV_HALF_W / 2, PAV_CZ - PAV_HALF_L / 2 -- back-left quadrant (Q2) centre
+	makePart({ Name = "DailyPodium", Size = Vector3.new(11, 2, 7), Color = WOOD_MED, CFrame = CFrame.new(cx, FLOOR_TOP + 1, cz), Parent = parent })
+	makePart({ Name = "DailyGift", Size = Vector3.new(5, 5, 5), Color = Palette.Pink, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(cx, FLOOR_TOP + 4.5, cz), Parent = parent })
+	makePart({ Name = "Ribbon", Size = Vector3.new(5.2, 1.1, 1.2), Color = Palette.Gold, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(cx, FLOOR_TOP + 4.5, cz), Parent = parent })
+	makePart({ Name = "Ribbon", Size = Vector3.new(1.2, 1.1, 5.2), Color = Palette.Gold, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(cx, FLOOR_TOP + 4.5, cz), Parent = parent })
+	makePart({ Name = "Bow", Size = Vector3.new(1.8, 1.6, 1.8), Color = Palette.Gold, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(cx, FLOOR_TOP + 7.8, cz), Parent = parent })
+	floatingLabel("🎁 DAILY REWARD", Vector3.new(cx, FLOOR_TOP + 11, cz), parent, 230)
+end
+
+local function buildRobuxShop(parent: Instance)
+	local cx, cz = PAV_CX + PAV_HALF_W / 2, PAV_CZ - PAV_HALF_L / 2 -- back-right quadrant (Q1) centre
+	makePart({ Name = "RobuxCounter", Size = Vector3.new(16, 2, 7), Color = WOOD_MED, CFrame = CFrame.new(cx, FLOOR_TOP + 1, cz), Parent = parent })
+	for i = -1, 1 do
+		local px = cx + i * 5
+		makePart({ Name = "RobuxPedestal", Size = Vector3.new(2.6, 3, 2.6), Color = Palette.Podium, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(px, FLOOR_TOP + 3.5, cz), Parent = parent })
+		makePart({ Name = "RobuxToken", Size = Vector3.new(2, 2, 2), Color = Palette.Lime, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(px, FLOOR_TOP + 6, cz) * CFrame.Angles(0, math.rad(35), 0), Parent = parent })
+	end
+	floatingLabel("💎 ROBUX SHOP", Vector3.new(cx, FLOOR_TOP + 11, cz), parent, 230)
+end
+
+----------------------------------------------------------------- the open pavilion
+local function buildPavilion(parent: Instance): Model
+	local pav = Instance.new("Model")
+	pav.Name = "ShopBuilding"
+	pav.Parent = parent
+
+	-- FLOOR (raised plank platform)
+	makePart({ Name = "Floor", Size = Vector3.new(PAV_HALF_W * 2, 1, PAV_HALF_L * 2), Color = WOOD_MED, CFrame = CFrame.new(PAV_CX, FLOOR_TOP - 0.5, PAV_CZ), Parent = pav })
+
+	-- 4 CORNER PILLARS
+	local px = PAV_HALF_W - PILLAR_INSET
+	local pz = PAV_HALF_L - PILLAR_INSET
+	local pillarTops = {}
+	for _, sx in ipairs({ -1, 1 }) do
+		for _, sz in ipairs({ -1, 1 }) do
+			local cx, cz = PAV_CX + sx * px, PAV_CZ + sz * pz
+			makePart({ Name = "Pillar", Size = Vector3.new(4, EAVE_Y - FLOOR_TOP, 4), Color = WOOD_DARK, CFrame = CFrame.new(cx, (FLOOR_TOP + EAVE_Y) / 2, cz), Parent = pav })
+			table.insert(pillarTops, Vector3.new(cx, EAVE_Y, cz))
+		end
+	end
+
+	-- EAVE BEAMS connecting the pillar tops (a top plate frame just below the roof)
+	local beamY = EAVE_Y - 1
+	makePart({ Name = "Plate", Size = Vector3.new(px * 2 + 4, 2, 3), Color = WOOD_DARK, CFrame = CFrame.new(PAV_CX, beamY, PAV_CZ - pz), Parent = pav })
+	makePart({ Name = "Plate", Size = Vector3.new(px * 2 + 4, 2, 3), Color = WOOD_DARK, CFrame = CFrame.new(PAV_CX, beamY, PAV_CZ + pz), Parent = pav })
+	makePart({ Name = "Plate", Size = Vector3.new(3, 2, pz * 2 + 4), Color = WOOD_DARK, CFrame = CFrame.new(PAV_CX - px, beamY, PAV_CZ), Parent = pav })
+	makePart({ Name = "Plate", Size = Vector3.new(3, 2, pz * 2 + 4), Color = WOOD_DARK, CFrame = CFrame.new(PAV_CX + px, beamY, PAV_CZ), Parent = pav })
+
+	-- KNEE BRACES (small diagonals at each pillar top, inward) for the aesthetic timber look
+	for _, top in ipairs(pillarTops) do
+		local inward = Vector3.new(PAV_CX - top.X, 0, PAV_CZ - top.Z).Unit
+		local a = top + Vector3.new(0, -4.5, 0)
+		local b = top + inward * 5 + Vector3.new(0, 0.5, 0)
+		beam(a, b, 1.6, WOOD_DARK, pav, "Brace")
+	end
+
+	-- SHINGLE-ROW HIP ROOF: a 4-sided hip (front/back/left/right slopes) rising to ONE central apex,
+	-- each slope built from even horizontal shingle COURSES (alternating brown bands), framed by hip
+	-- rafters down the 4 corners + a small apex cap. Lower/broader profile than the star roof.
+	local Ax = PAV_HALF_W + ROOF_OVERHANG
+	local Bz = PAV_HALF_L + ROOF_OVERHANG
+	local apex = Vector3.new(PAV_CX, EAVE_Y + ROOF_RISE, PAV_CZ)
+	local cFL = Vector3.new(PAV_CX - Ax, EAVE_Y, PAV_CZ + Bz)
+	local cFR = Vector3.new(PAV_CX + Ax, EAVE_Y, PAV_CZ + Bz)
+	local cBL = Vector3.new(PAV_CX - Ax, EAVE_Y, PAV_CZ - Bz)
+	local cBR = Vector3.new(PAV_CX + Ax, EAVE_Y, PAV_CZ - Bz)
+	buildSlopeShingles(cFL, cFR, apex, pav) -- +Z (front)
+	buildSlopeShingles(cBL, cBR, apex, pav) -- -Z (back)
+	buildSlopeShingles(cFL, cBL, apex, pav) -- -X (left)
+	buildSlopeShingles(cFR, cBR, apex, pav) -- +X (right)
+	for _, c in ipairs({ cFL, cFR, cBL, cBR }) do -- hip rafters down the 4 corners
+		beam(c, apex, 1.6, WOOD_DARK, pav, "Rafter")
+	end
+	makePart({ Name = "ApexCap", Size = Vector3.new(3.5, 3.5, 3.5), Color = WOOD_DARK, CFrame = CFrame.new(apex), Parent = pav })
+
+	-- HANGING "SHOP" SIGN: a board suspended BELOW the front eave beam by two chains (was mounted
+	-- above the frame). Text on the wood (faces +Z / the lane); players walk under it.
+	local signZ = PAV_CZ + pz -- front eave-beam line
+	local beamBottomY = EAVE_Y - 2 -- bottom of the front eave plate (centre EAVE_Y-1, 2 tall)
+	local signCY = EAVE_Y - 11 -- board centre (hangs ~11 below the eave)
+	local signTopY = signCY + 3.5 -- top edge of the 7-tall board
+	woodSign("SHOP", Vector3.new(30, 7, 1.2), Vector3.new(PAV_CX, signCY, signZ), 1, pav)
+	for _, sx in ipairs({ -1, 1 }) do -- two chains from the board's top corners up to the beam
+		makePart({
+			Name = "SignChain",
+			Size = Vector3.new(0.5, beamBottomY - signTopY, 0.5),
+			Color = Color3.fromRGB(70, 74, 84),
+			Material = Enum.Material.Metal,
+			NoStuds = true,
+			CanCollide = false,
+			CFrame = CFrame.new(PAV_CX + sx * 12, (beamBottomY + signTopY) / 2, signZ),
+			Parent = pav,
+		})
+	end
+
+	-- BACK features
+	buildDailyReward(pav)
+	buildRobuxShop(pav)
+
+	return pav
 end
 
 ----------------------------------------------------------------- init
@@ -342,32 +368,14 @@ function StandManager.init()
 	folder.Name = STANDS_FOLDER_NAME
 	folder.Parent = Workspace
 
-	-- a small arc around the spawn pad (14x14 at SC), clear of the pad. The Incubator
-	-- stand reaches furthest toward -Z (its NPC at ~z=-96); the nearest base fronts sit
-	-- near z=-150 (see header note), so the cluster clears them by ~55 studs. Each faces
-	-- +Z (toward the courtyard/dig lane).
-	-- per-shop recolor of the imported model's white/blue: shop #1 keeps the original
-	-- white+blue (nil/nil); shop #2 -> red + purple; shop #3 -> purple + black.
-	-- entry = { standType, fallbackTitle, accent, primaryColor?, secondaryColor?, groundPos }
-	local RED = Color3.fromRGB(230, 45, 45)
-	local PURPLE = Palette.Purple
-	local BLACK = Color3.fromRGB(35, 35, 40)
-	local stands = {
-		{ "Shovel", "🪓 SHOVEL SHOP", Palette.Pink, nil, nil, Vector3.new(SC.X - 34, 0, SC.Z) },
-		{ "Incubator", "🔥 INCUBATOR", Palette.Cyan, RED, PURPLE, Vector3.new(SC.X, 0, SC.Z - 22) },
-		{ "Luck", "🍀 LUCK", Palette.Lime, PURPLE, BLACK, Vector3.new(SC.X + 34, 0, SC.Z) },
-	}
-	-- guard: if a future edit pushes any stand's footprint past the nearest base fronts,
-	-- warn instead of silently colliding with the slot-1/2 buildings.
-	local STAND_BACK_REACH = 4
-	for _, s in ipairs(stands) do
-		local groundPos = s[6] :: Vector3
-		if groundPos.Z - STAND_BACK_REACH <= NEAREST_BASE_FRONT_Z then
-			warn(("[StandManager] %s stand reaches z=%.1f, past the nearest base fronts (~z=%d); it may overlap slots 1/2.")
-				:format(tostring(s[1]), groundPos.Z - STAND_BACK_REACH, NEAREST_BASE_FRONT_Z))
-		end
-		buildStand(s[1] :: string, s[2] :: string, s[3] :: Color3, s[4] :: Color3?, s[5] :: Color3?, groundPos, folder)
-	end
+	buildPavilion(folder)
+
+	-- the two vendors (character + E-prompt only), front-centre, facing the courtyard (+Z).
+	-- Shovel LEFT (-X), Incubator RIGHT (+X).
+	-- vendors stand in the CENTRE of the two FRONT quadrants: Shovel = front-left (Q3),
+	-- Incubator = front-right (Q4). (Daily/Robux fill the two back quadrants Q2/Q1.)
+	buildVendor("Shovel", "🪓 SHOVEL", Vector3.new(PAV_CX - PAV_HALF_W / 2, FLOOR_TOP, PAV_CZ + PAV_HALF_L / 2), folder)
+	buildVendor("Incubator", "🔥 INCUBATOR", Vector3.new(PAV_CX + PAV_HALF_W / 2, FLOOR_TOP, PAV_CZ + PAV_HALF_L / 2), folder)
 end
 
 return StandManager

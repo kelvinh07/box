@@ -27,11 +27,14 @@ local function cmdTest(player: Player)
 	end
 	p.Cash = AdminConfig.MaxCash
 	p.Gems = AdminConfig.MaxGems
+	-- also fill LifetimeCash so the rebirth milestone is met — lets an admin REBIRTH (break
+	-- the zone wall) and walk into the next zone to test it.
+	p.LifetimeCash = AdminConfig.MaxCash
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
 	Net.getEvent("Notify"):FireClient(player, {
 		title = "ADMIN",
-		text = "Cash & Gems maxed out.",
+		text = "Cash, Gems & LifetimeCash maxed out.",
 		color = "Legendary",
 	})
 end

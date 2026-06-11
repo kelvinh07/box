@@ -28,9 +28,14 @@ local Shared = ReplicatedStorage.Shared
 local ZoneConfig = require(Shared.Config.ZoneConfig)
 local GameConfig = require(Shared.Config.GameConfig)
 local Palette = require(Shared.Config.Palette)
+local RarityColors = require(Shared.Config.RarityColors)
+local BrainrotConfig = require(Shared.Config.BrainrotConfig)
+local UpgradeConfig = require(Shared.Config.UpgradeConfig)
 local Surface = require(Shared.Modules.Surface)
 local Format = require(Shared.Modules.Format)
+local BrainrotMath = require(Shared.Modules.BrainrotMath)
 local Net = require(Shared.Modules.Net)
+local PixelEgg = require(Shared.Modules.PixelEgg)
 
 local PlayerData = require(script.Parent.PlayerData)
 local BrainrotFactory = require(script.Parent.BrainrotFactory)
@@ -45,13 +50,17 @@ local BaseManager = {}
 ----------------------------------------------------------------- layout config
 local BASES_FOLDER_NAME = "PlayerBases"
 local DIGLANE_FOLDER_NAME = "DigLane"
-local MAX_SLOTS = 10
+local MAX_SLOTS = 6 -- 6-player lobby (6 bases: 3 per side with a CENTER GAP for the Upgrade Shop); keep in sync with Players.MaxPlayers
 -- CollectionService tag the client listens for to wire up the level-up panel, and
 -- the click range for the per-brainrot ClickDetector that opens it.
 local BRAINROT_TAG = "Brainrot"
 local BRAINROT_CLICK_DISTANCE = 24
 local LOBBY_RADIUS = 200       -- distance from dig center to each base (pushed back, courtyard room for the shared lane)
-local ARC_SPAN_DEG = 210       -- how far the ring wraps (>180 = nice and round)
+-- Per-side plot spacing is (ARC_SPAN_DEG - LOBBY_CENTER_GAP_DEG)/2 split across the 3 plots:
+-- keep that band ~60-65° so adjacent same-side plots stay clearly GAPPED (it bunched them up
+-- when the band dropped to ~49°). Middle-plaza width is driven by LOBBY_CENTER_GAP_DEG alone.
+local ARC_SPAN_DEG = 204       -- how far the ring wraps; widened so each side's 3 plots get a clear little gap again (band back to ~62°). Higher = wider per-side spread (also creeps the tip plots forward toward the lane).
+local LOBBY_CENTER_GAP_DEG = 80 -- empty wedge at the back-centre (bulge) — NO base sits here; "parts the seas" so the left trio sits left and the right trio sits right, opening a buildable plaza in the middle (reserved for a center building). Pulled back from 96 (was overdone) but still well above the original 56. Higher = more middle space (but narrows the per-side band, so bump ARC_SPAN_DEG to keep the side gaps).
 -- Bigger, two-floor building. Wider sides (+16) and a much deeper back (+50)
 -- vs the old 48x42 footprint. The building faces the dig center (open front =
 -- local -Z); the back (+Z) is pushed out the most.
@@ -75,30 +84,83 @@ local STAIR_ENTRANCE_LZ = STAIR_FRONT_LZ - STAIR_STEP_D             -- well entr
 -- walls between them:
 --   base(open front) -> [Zone 1 entry dig] -> wall -> [Zone 2 dig] -> wall -> [Zone 3 dig]
 -- Every dig site is the SAME SIZE (68x68); walls sit exactly midway between them.
-local REBIRTH_WALL = Vector3.new(100, 44, 6)  -- wall WIDTH 100 >= dig-site width 96, fully separating sites (was 76,36,4)
-local SEG_SIZE = Vector3.new(96, 1, 96)       -- every dig square is this size (bigger; was 68)
+-- wall WIDTH 124 >= dig-site width 120. The zone1/2 wall (k==1) uses this and is ALSO sealed at
+-- the sides by buildLaneFences (the ZoneFence barriers), so it stays this width. Deeper walls
+-- (k>=2) have NO side fences, so buildSharedWall spans THEM across the full lane (SEALED_WALL_HALF_X)
+-- to stop loop-arounds — see buildSharedWall / buildWideWallFrame.
+local REBIRTH_WALL = Vector3.new(124, 44, 6)
+local SEG_SIZE = Vector3.new(120, 1, 120)     -- every dig square is this size (expanded for immersive zones; was 96)
 local LANE_WALL_Y = 1 + REBIRTH_WALL.Y / 2   -- wall center height (sits on the ground)
 local LANE_SEG_Y = 1.3                       -- dig-area slab center height
 -- The shared dig lane starts near the half-circle CENTER (zone-1 dig site) and the
 -- sites march OUTWARD (+Z) from there, a wall midway between each consecutive pair.
 local LANE_START = 0                          -- z of the zone-1 dig site (~lobby center)
 local LANE_STEP = SEG_SIZE.Z + 28             -- center-to-center between dig sites
+-- Zone 1 (the LOBBY dig site) is ENLARGED and pushed toward the lobby (-Z), away from the
+-- rebirth wall, to eat the empty courtyard grass. Only zone 1 differs; deeper zones keep
+-- SEG_SIZE. Clearances (with the upgrade shops nudged back to SC.Z=-100, front edge ~z=-96):
+-- grass border spans z[-90, 60] -> ~6 studs clear of the shops AND of wall-1's framing stones.
+local ZONE1_DIG_SIZE = Vector3.new(150, 1, 138) -- bigger than SEG_SIZE (was a small patch in a big field)
+local ZONE1_DIG_SHIFT_Z = -15                   -- push toward the lobby, away from the +Z zone wall
+local ZONE1_DIG_HALF = 56                       -- moundable core half-extent (scaled up with the bigger slab)
 
 -- LANE SIDE WALLS (see buildLaneSideWalls): two grass-topped DIRT CLIFFS flanking the
 -- dig lane, running parallel to it (+Z). They TIGHTEN the playable width (the old
--- map-wide snow border was removed) by sitting just OUTSIDE the forest strip (~x +/-131).
+-- map-wide snow border was removed) by sitting just OUTSIDE the forest strip.
 -- TUNE these to make the lane wider/thinner: lower INNER_X = thinner lane (but don't go
 -- below the forest strip or trees clip through).
-local LANE_SIDE_INNER_X = 142   -- inner face X of each wall (just outside the forest trees)
+local LANE_SIDE_INNER_X = 100   -- inner face X of each wall; pulled IN close to the digsite for a COMPACT lane (well clear of the end-plot inner edge at x~140.5, so the cliff never clips a plot)
 local LANE_SIDE_THICK = 20      -- wall thickness in X (semi-thick cliff body)
 local LANE_SIDE_BODY_H = 40     -- dirt/mountain cliff height
 local LANE_SIDE_CAP_H = 7       -- grass cap height on top
--- NEAR END (z): pushed PAST the front-most end-plot bases (arc tips reach ~z71 at this x)
--- so the wall never clips into a plot. Raise this if it still overlaps a base.
-local LANE_SIDE_Z_START = 100
+-- Half-width of the FENCE-LESS inter-zone walls (k>=2). The gate ENDS just INSIDE the stone
+-- piles (which sit at the border) rather than running all the way through them — so no slab of
+-- wall pokes THROUGH the stone out toward the border. The loop-around is still sealed: from the
+-- gate end out to the border the (collidable) stone piles + the border cliff block the lane.
+-- (Stone piles center at ~LANE_SIDE_INNER_X-7 with inner edge ~-14, so the gate overlaps them.)
+local SEALED_WALL_HALF_X = LANE_SIDE_INNER_X - 14  -- = 86 (ends inside the stone, not at the border)
+-- NEAR END (z): start RIGHT AT the zone1/2 FENCE LINE (~z72) so the side wall meets the
+-- fence/anti-jump barrier ends with NO walk-around gap. (Previously z=100, which left an
+-- open grass corner between the fence end and the wall start that players could slip
+-- through.) The near stretch runs alongside the outer end-plot fronts; the forest tree
+-- strip is pulled IN (buildForestTrees outerX) so trees don't clip the pushed-in wall.
+local LANE_SIDE_Z_START = 72
 -- The walls pre-extend to frame this MANY zones, not just the current ZoneConfig.MaxZone,
 -- so FUTURE zones are already walled. Bump this (and the ground size) as you add zones.
-local LANE_SIDE_PLANNED_ZONES = 6
+local LANE_SIDE_PLANNED_ZONES = 8 -- frame all 8 zones down the lane (keep in sync with ZoneConfig.MaxZone + the MapBuilder ground size)
+
+-- LOBBY ENCLOSURE WALL (buildLobbyWall): a THREE-TIER dirt-cliff + grass-cap rampart (SAME studded
+-- border style as the lane side walls) that SURROUNDS the whole starting lobby. NOT a smooth arc —
+-- a faceted horseshoe of STRAIGHT segments with ANGLED (chamfered) corners. Three stepped tiers
+-- (short inner -> tall outer) make a natural amphitheater, and per-block height + per-vertex radial
+-- JITTER (seeded) breaks up the uniformity so it reads like a natural cliff. The innermost tier's
+-- two FRONT segments run along X and butt into the lane border walls' OUTER face PERPENDICULARLY
+-- (both sides) WITHOUT poking through to the lane side; the +Z gap between them is the lane opening.
+local LOBBY_WALL_THICK = 22
+local LOBBY_WALL_CAP_H = 6
+-- three stepped terraces (inner -> outer). `off` = radial push beyond the base path. The tiers sit
+-- FLUSH (off ~< THICK) so there's NO gap between the 3 layers — one continuous stepped mass. `h` =
+-- nominal height (jittered per block). `frontZ` = z of this tier's front runs — all PAST the end
+-- plots (which reach z=97) so the wall never sits inside a plot. `front` = wrap the two front runs IN
+-- to the lane border walls: inner + middle do (perpendicular join); the OUTER stops short (fades).
+local LOBBY_WALL_TERRACES = {
+	{ off = 0,  h = 24, frontZ = 110, front = true },  -- innermost: shortest, reaches the lane border
+	{ off = 18, h = 52, frontZ = 132, front = true },  -- middle: reaches the lane border (flush behind inner)
+	{ off = 36, h = 84, frontZ = 88,  front = false }, -- outermost: tallest, stops short of the lane (fades)
+}
+-- the terraces are made of CHUNKY blocks (few, wide) with BIG height jumps between them — bold + blocky,
+-- not a smooth wall of tiny parts. SUBLEN up + H_JITTER up = the look; R_JITTER stays tiny so the flush
+-- tiers don't drift apart into gaps.
+local LOBBY_WALL_SUBLEN = 72   -- block length: FEW, wide blocks per terrace (was 26 — far too many)
+local LOBBY_WALL_H_JITTER = 14 -- +/- per-block height — BIG steps between adjacent blocks (jagged, bold)
+local LOBBY_WALL_R_JITTER = 2  -- tiny in/out wobble (kept so the tiers stay flush — no gaps)
+local LOBBY_WALL_SEED = 7321   -- fixed so the jittered layout is identical every build
+-- studded STONE rocks SPRINKLED on top of the wall ledges (a light scattering, like the reference).
+-- Uses its OWN seeded rng so tuning rocks never changes the approved wall-block layout. Rocks are
+-- chosen from all ledge tops and split EVENLY left/right so one side never crowds.
+local LOBBY_WALL_ROCK_TOTAL = 16    -- total rocks, split evenly: LOBBY_WALL_ROCK_TOTAL/2 per side
+local LOBBY_WALL_ROCK_MIN = 15      -- base WIDTH range (studs) of a rock = 3 overlapping stone blocks
+local LOBBY_WALL_ROCK_MAX = 24
 
 ----------------------------------------------------------------- state
 local basesFolder: Folder
@@ -111,7 +173,9 @@ local slotFolder: { [number]: Folder } = {}
 local slotPodiums: { [number]: { BasePart } } = {}
 local slotModels: { [number]: { [string]: Model } } = {}           -- occupant brainrot models
 local slotPlates: { [number]: { [number]: any } } = {}             -- [podiumIndex] = {plate,label,debounce}
+local slotLevelButtons: { [number]: { [number]: any } } = {}       -- [podiumIndex] = {part,label,click}
 local slotSign: { [number]: TextLabel } = {}                       -- the name TextLabel (toggles text)
+local slotCeilingHatch: { [number]: BasePart } = {}                -- floor-1 roof hatch over the ladder hole (closed until floor 2 unlocks)
 -- the 4 incubator records per slot (built once); each: { base, dome, light, label, click, pos, index }
 local slotIncubators: { [number]: { any } } = {}
 -- the back-wall LADDER to floor 2 per slot: { truss, click, label, billboard }
@@ -133,19 +197,37 @@ function BaseManager.setRebirthHandler(fn: (Player) -> any)
 	rebirthHandler = fn
 end
 
--- center-first arc ordering so the first player(s) to join sit near the middle
-local SLOT_ARCINDEX: { [number]: number } = {}
+-- The bases sit 3-per-side on the inward-facing arc with an EMPTY WEDGE in the middle
+-- (LOBBY_CENTER_GAP_DEG, at the back-centre bulge) reserved for the Upgrade Shop building.
+-- SLOT_ANGLE[slot] = that slot's arc angle (deg). Slots are assigned CENTRE-OUT, alternating
+-- right/left, so early joiners sit nearest the gap/front. TIP_SLOT_* are the outermost (arc-tip)
+-- slots the lane fences anchor to.
+local SLOT_ANGLE: { [number]: number } = {}
+local TIP_SLOT_LEFT, TIP_SLOT_RIGHT = 1, 1
 do
-	local mid = (MAX_SLOTS - 1) / 2
-	local idxs = {}
-	for i = 0, MAX_SLOTS - 1 do
-		idxs[#idxs + 1] = i
+	local perSide = math.floor(MAX_SLOTS / 2)
+	local gapHalf = LOBBY_CENTER_GAP_DEG / 2
+	local edge = ARC_SPAN_DEG / 2
+	-- angle magnitudes from the gap edge (inner) out to the arc tip (outer)
+	local mags = {}
+	for i = 0, perSide - 1 do
+		local f = (perSide <= 1) and 0 or i / (perSide - 1)
+		mags[#mags + 1] = gapHalf + f * (edge - gapHalf)
 	end
-	table.sort(idxs, function(a, b)
-		return math.abs(a - mid) < math.abs(b - mid)
-	end)
-	for slot = 1, MAX_SLOTS do
-		SLOT_ARCINDEX[slot] = idxs[slot]
+	-- assign centre-out, alternating +right / -left
+	local slot = 1
+	for _, mag in ipairs(mags) do
+		SLOT_ANGLE[slot] = mag
+		slot += 1
+		if slot <= MAX_SLOTS then
+			SLOT_ANGLE[slot] = -mag
+			slot += 1
+		end
+	end
+	-- tip slots = most-negative (left) / most-positive (right) angle
+	for s, a in pairs(SLOT_ANGLE) do
+		if a < SLOT_ANGLE[TIP_SLOT_LEFT] then TIP_SLOT_LEFT = s end
+		if a > SLOT_ANGLE[TIP_SLOT_RIGHT] then TIP_SLOT_RIGHT = s end
 	end
 end
 
@@ -180,9 +262,7 @@ end
 -- so local +Z (the open front + the dig lane) fans inward toward the courtyard
 -- the half-circle opens onto, while local -Z is the solid back of the building.
 local function baseOrigin(slot: number): CFrame
-	local arcIndex = SLOT_ARCINDEX[slot] or 0
-	local frac = (MAX_SLOTS == 1) and 0.5 or arcIndex / (MAX_SLOTS - 1)
-	local ang = math.rad(-ARC_SPAN_DEG / 2 + frac * ARC_SPAN_DEG)
+	local ang = math.rad(SLOT_ANGLE[slot] or 0)
 	local c = MapBuilder.DigCenter
 	local baseY = 1.5 -- low so the floor is an easy step up from the ground
 	local radial = Vector3.new(math.sin(ang), 0, -math.cos(ang))
@@ -198,24 +278,18 @@ local function plotCostFor(plots: number): number
 end
 
 ----------------------------------------------------------------- podiums + plates
+-- The brainrot's slot is a single THICK gray platform (replaces the old purple podium + cyan
+-- rim): footprint = the old rim (7x7), thickened to PODIUM_SIZE.Y (~2.3) tall. The brainrot
+-- stands on its top; the LEVEL UP sign mounts on its inward side face (buildLevelButton).
 local function buildPodium(cf: CFrame, parent: Instance): BasePart
 	local podium = makePart({
 		Name = "Podium",
 		Size = BrainrotFactory.PODIUM_SIZE,
-		Color = Palette.Podium,
-		Material = Enum.Material.Neon,
+		Color = Palette.BaseTrim, -- solid dark-gray pedestal (brainrot/green plate/red sign pop against it)
+		Material = Enum.Material.Plastic, -- matte studded
 		CFrame = cf,
 		Parent = parent,
 	})
-	local rim = makePart({
-		Name = "Rim",
-		Size = BrainrotFactory.PODIUM_SIZE + Vector3.new(1, -0.6, 1),
-		Color = Palette.PodiumRim,
-		Material = Enum.Material.Neon,
-		CFrame = cf * CFrame.new(0, -0.2, 0),
-		Parent = podium,
-	})
-	rim.CanCollide = false
 	return podium
 end
 
@@ -245,7 +319,7 @@ local function setBrainrotLevelLabel(model: Model, level: number)
 		bb = Instance.new("BillboardGui")
 		bb.Name = "LevelLabel"
 		bb.Size = UDim2.new(0, 90, 0, 28)
-		bb.StudsOffset = Vector3.new(0, 7.5, 0) -- above the factory InfoLabel
+		bb.StudsOffset = Vector3.new(0, 11, 0) -- above the factory InfoLabel (raised for the bigger models)
 		bb.AlwaysOnTop = true
 		bb.MaxDistance = 120
 		bb.Parent = primary
@@ -265,6 +339,26 @@ local function setBrainrotLevelLabel(model: Model, level: number)
 	end
 end
 
+-- Update a placed brainrot's InfoLabel income line ("[Variant]  $X/s") to its CURRENT income.
+-- BrainrotFactory builds that label ONCE at place time, so without this it shows stale level-1
+-- income forever (the bug where "$/s" never changes on level up). Idempotent; safe if absent.
+local function setBrainrotInfoIncome(model: Model, entry: any, rebirthCount: number)
+	local primary = model.PrimaryPart
+	if not primary then
+		return
+	end
+	local bb = primary:FindFirstChild("InfoLabel") :: BillboardGui?
+	if not bb then
+		return
+	end
+	local income = bb:FindFirstChild("Income") :: TextLabel?
+	if not income then
+		return
+	end
+	local cash = select(1, BrainrotMath.income(entry, rebirthCount))
+	income.Text = ("[%s]  $%s/s"):format(entry.variant, Format.short(cash))
+end
+
 -- a green pressure plate in front of podium `idx`; stepping on it collects cash.
 -- `cf` is the plate's world CFrame (its center, already lifted to the floor surface).
 local function buildPlate(slot: number, idx: number, cf: CFrame, parent: Instance)
@@ -272,7 +366,7 @@ local function buildPlate(slot: number, idx: number, cf: CFrame, parent: Instanc
 		Name = ("Plate_%d"):format(idx),
 		Size = PLATE,
 		Color = Palette.Plate,
-		Material = Enum.Material.Neon,
+		Material = Enum.Material.Plastic, -- matte studded (was Neon — glowed too much)
 		CFrame = cf,
 		Parent = parent,
 	})
@@ -324,19 +418,21 @@ local function buildPlate(slot: number, idx: number, cf: CFrame, parent: Instanc
 	end)
 end
 
--- per-INDEX podium placement math (shared by real podiums AND the ghost next-slot
--- podium so they line up exactly). Brainrots line the side (window) walls: 6 per
--- side per floor. Plots 1-12 are floor 1, plots 13-24 are floor 2; within a floor
--- the first 6 hug the left (-X) window wall and the next 6 hug the right (+X) wall.
+-- per-INDEX podium placement math (shared by real podiums AND the ghost next-slot podium so
+-- they line up exactly). Brainrots line the two SIDE walls: 5 per side per floor, flanking
+-- the central walkway. Plots 1-10 are floor 1, plots 11-20 are floor 2; within a floor the
+-- first 5 hug the left (-X) wall and the next 5 hug the right (+X) wall.
 -- Returns (side, lx, lz, baseLY) for podium index `i`.
 local function podiumLocalAt(i: number): (number, number, number, number)
-	local floor = (i <= 12) and 1 or 2
-	local j = (i - 1) % 12             -- 0..11 within the floor
-	local side = (j < 6) and -1 or 1   -- first 6 = left wall, next 6 = right wall
-	local row = j % 6                  -- 0..5 along the depth
-	local lx = side * (FLOOR.X / 2 - 6)             -- podium near the side/window wall (~+/-26)
-	local lz = -32 + row * 13                       -- 6 podiums spread along the depth
-	local baseLY = (floor == 1) and 1 or FLOOR2_Y   -- floor surface
+	local perFloor = GameConfig.FloorOnePlots        -- 10 per floor
+	local half = math.floor(perFloor / 2)             -- 5 per side
+	local floor = (i <= perFloor) and 1 or 2
+	local j = (i - 1) % perFloor                       -- 0..9 within the floor
+	local side = (j < half) and -1 or 1                -- first 5 = left wall, next 5 = right wall
+	local row = j % half                               -- 0..4 along the depth
+	local lx = side * (FLOOR.X / 2 - 6)                -- podium near the side wall (~+/-26)
+	local lz = -28 + row * 14                          -- 5 podiums spread front->back (-28..28)
+	local baseLY = (floor == 1) and 1 or FLOOR2_Y      -- floor surface
 	return side, lx, lz, baseLY
 end
 
@@ -354,15 +450,10 @@ local function buildGhostPlot(slot: number, count: number)
 
 	local ghost = buildPodium(origin * CFrame.new(lx, baseLY + BrainrotFactory.PODIUM_SIZE.Y / 2, lz), folder)
 	ghost.Name = "GhostPodium"
-	ghost.Color = Palette.Wall   -- coral "locked" look, distinct from the vivid-purple real podiums
+	ghost.Color = Palette.Wall   -- coral "locked" look, distinct from the gray real platforms
 	ghost.Material = Enum.Material.Plastic
 	ghost.Transparency = 0.5
 	ghost.CanCollide = false
-	local rim = ghost:FindFirstChild("Rim")
-	if rim and rim:IsA("BasePart") then
-		rim.Color = Palette.Wall
-		rim.Transparency = 0.5
-	end
 
 	local bb = Instance.new("BillboardGui")
 	bb.Size = UDim2.new(0, 150, 0, 52)
@@ -399,6 +490,73 @@ local function buildGhostPlot(slot: number, count: number)
 	slotGhostPlot[slot] = { podium = ghost, label = lbl, cost = cost }
 end
 
+-- A physical "LEVEL UP" button standing on the INWARD (player-facing) edge of podium `idx`.
+-- Its SurfaceGui shows the next-level cost; the gate-updater turns it RED when the occupant
+-- can afford it and GRAY when they can't, hides it when no brainrot sits here, and shows
+-- "MAX LEVEL" at the cap. Clicking it is handled server-side: it levels the brainrot on this
+-- podium (server-validated via EconomyManager.levelBrainrot). `inward` is the world-space
+-- direction from the podium toward the central walkway. Parented to the podium so it is
+-- destroyed with it on a plot rebuild.
+local function buildLevelButton(slot: number, idx: number, podium: BasePart, inward: Vector3)
+	-- The LEVEL UP sign mounts flush on the platform's INWARD side face (the side facing the base's
+	-- central walkway), vertically centered and a touch smaller than that face. The gate-updater
+	-- drives its text ("LEVEL UP" + cost) / color / visibility; `inward` points toward the walkway.
+	local SIGN_W = BrainrotFactory.PODIUM_SIZE.Z - 1   -- a bit narrower than the platform's 7-wide side
+	local SIGN_H = BrainrotFactory.PODIUM_SIZE.Y - 0.5 -- a bit shorter than the platform's side height
+	local SIGN_T = 0.3
+	local pos = podium.Position + inward * (BrainrotFactory.PODIUM_SIZE.X / 2 + SIGN_T / 2 + 0.01)
+
+	local btn = Instance.new("Part")
+	btn.Name = ("LevelButton_%d"):format(idx)
+	btn.Size = Vector3.new(SIGN_W, SIGN_H, SIGN_T)
+	btn.CFrame = CFrame.lookAt(pos, pos + inward) -- Front face (-Z) points at the player
+	btn.Anchored = true
+	btn.CanCollide = false
+	btn.CastShadow = false
+	btn.Material = Enum.Material.SmoothPlastic
+	btn.Color = Color3.fromRGB(108, 108, 118)
+	btn.Transparency = 1 -- hidden until the gate-updater reveals it (only when a brainrot sits here)
+	btn.Parent = podium
+
+	local surf = Instance.new("SurfaceGui")
+	surf.Name = "Face"
+	surf.Face = Enum.NormalId.Front
+	surf.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	surf.PixelsPerStud = 40
+	surf.LightInfluence = 0
+	surf.MaxDistance = 80
+	surf.Parent = btn
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.FredokaOne
+	lbl.TextScaled = true
+	lbl.TextColor3 = Color3.new(1, 1, 1)
+	lbl.TextStrokeTransparency = 0
+	lbl.Text = ""
+	lbl.Parent = surf
+
+	local click = Instance.new("ClickDetector")
+	click.MaxActivationDistance = 0 -- enabled by the gate-updater when occupied
+	click.Parent = btn
+	click.MouseClick:Connect(function(clicker: Player)
+		if clicker ~= slotOccupant[slot] then
+			return
+		end
+		local id = brainrotIdAtPodium(slot, idx)
+		if not id then
+			return
+		end
+		local r = EconomyManager.levelBrainrot(clicker, id)
+		if r and r.ok == false and r.reason then
+			Net.getEvent("Notify"):FireClient(clicker, { title = "Level Up", text = r.reason, color = "Legendary" })
+		end
+	end)
+
+	slotLevelButtons[slot] = slotLevelButtons[slot] or {}
+	slotLevelButtons[slot][idx] = { part = btn, label = lbl, click = click }
+end
+
 -- (re)build the podium grid + plates for a given slot's plot count
 local function rebuildSlotPodiums(slot: number, count: number)
 	local folder = slotFolder[slot]
@@ -420,6 +578,7 @@ local function rebuildSlotPodiums(slot: number, count: number)
 		end
 	end
 	slotPlates[slot] = {}
+	slotLevelButtons[slot] = {} -- the button parts are children of the podiums (destroyed above)
 
 	count = math.clamp(count, 0, GameConfig.MaxPlots)
 	local origin = baseOrigin(slot)
@@ -431,8 +590,11 @@ local function rebuildSlotPodiums(slot: number, count: number)
 			folder
 		)
 		table.insert(slotPodiums[slot], podium)
-		-- pressure plate just INWARD of the podium (toward the central walkway)
-		buildPlate(slot, i, origin * CFrame.new(lx - side * 6, baseLY + PLATE.Y / 2, lz), folder)
+		-- pressure plate just INWARD of the podium (toward the central walkway); offset 7 so it sits
+		-- flush in FRONT of the now-wider 7-stud platform instead of tucking under its edge
+		buildPlate(slot, i, origin * CFrame.new(lx - side * 7, baseLY + PLATE.Y / 2, lz), folder)
+		-- a "LEVEL UP" button on the podium's inward (player-facing) edge
+		buildLevelButton(slot, i, podium, origin:VectorToWorldSpace(Vector3.new(-side, 0, 0)).Unit)
 	end
 
 	-- rebuild the GHOST next-slot Buy podium: destroy any prior one FIRST, then show
@@ -454,6 +616,38 @@ local function rebuildSlotPodiums(slot: number, count: number)
 			buildGhostPlot(slot, count)
 		end
 	end
+end
+
+-- World-space AABB (center, size) of ONLY a model's rendered parts. The imported brainrot
+-- models carry an oversized INVISIBLE RootPart whose pivot sits 1–3 studs BELOW the visible
+-- animal, so Model:GetBoundingBox()/the pivot can't tell us where the feet are. Measuring the
+-- visible parts lets us drop the rendered model's bottom onto the podium and center it on top,
+-- instead of floating it up by the RootPart's overhang (the old behavior).
+local function visibleAABB(model: Model): (Vector3, Vector3)
+	local min: Vector3?, max: Vector3? = nil, nil
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency < 0.95 and not (d == model.PrimaryPart and d.Name == "RootPart") then
+			local cf, half = d.CFrame, d.Size / 2
+			for sx = -1, 1, 2 do
+				for sy = -1, 1, 2 do
+					for sz = -1, 1, 2 do
+						local c = (cf * CFrame.new(sx * half.X, sy * half.Y, sz * half.Z)).Position
+						if not min then
+							min, max = c, c
+						else
+							min = Vector3.new(math.min(min.X, c.X), math.min(min.Y, c.Y), math.min(min.Z, c.Z))
+							max = Vector3.new(math.max(max.X, c.X), math.max(max.Y, c.Y), math.max(max.Z, c.Z))
+						end
+					end
+				end
+			end
+		end
+	end
+	if not min or not max then
+		local cf, s = model:GetBoundingBox()
+		return cf.Position, s
+	end
+	return (min + max) / 2, (max - min)
 end
 
 -- place a single brainrot model onto the next free podium for `slot`
@@ -496,9 +690,28 @@ local function placeBrainrotForSlot(slot: number, player: Player, entry: any)
 	-- client can always read it off the model regardless of the build path.
 	model:SetAttribute("BrainrotId", entry.id)
 	model.Parent = slotFolder[slot]
-	local _, modelSize = model:GetBoundingBox()
-	local topY = podium.Position.Y + podium.Size.Y / 2 + modelSize.Y / 2
-	model:PivotTo(CFrame.new(podium.Position.X, topY, podium.Position.Z))
+
+	-- Sit the brainrot ON the podium and translate (only) so its BOTTOM rests on the podium top,
+	-- centered. The small sink guarantees contact (no hairline gap) — per design we'd rather it
+	-- touch than float.
+	--   VERTICAL: ground on the FULL bounding box bottom. These imported models render meshes that
+	-- OVERFLOW their visible part-boxes downward (legs / lower body), so a visible-only AABB sits
+	-- too high and the model sinks to its middle. The full bbox includes the bounding RootPart/Vfx
+	-- parts, which DO bound the true visual extent, so its bottom is the model's real bottom.
+	--   HORIZONTAL: still center on the VISIBLE model (the full bbox can be pulled off-center by Vfx).
+	local BRAINROT_SINK = 0.2
+	local podiumTop = podium.Position.Y + podium.Size.Y / 2 - BRAINROT_SINK
+	local fullCf, fullSize = model:GetBoundingBox()
+	local center = visibleAABB(model)
+	local g = model:GetPivot() -- keep the model's authored orientation; only translate it
+	local grounded = Vector3.new(
+		podium.Position.X + (g.Position.X - center.X),
+		podiumTop + (g.Position.Y - (fullCf.Y - fullSize.Y / 2)),
+		podium.Position.Z + (g.Position.Z - center.Z)
+	)
+	-- translate ONLY: forcing an identity CFrame here would yaw the model about its off-center
+	-- RootPart pivot (the imported pivots carry an authored yaw) and slide it off the podium edge.
+	model:PivotTo(g.Rotation + grounded)
 
 	-- show the brainrot's current level ("Lv N") on its billboard
 	setBrainrotLevelLabel(model, entry.level or 1)
@@ -518,13 +731,17 @@ local function placeBrainrotForSlot(slot: number, player: Player, entry: any)
 	end
 	CollectionService:AddTag(model, BRAINROT_TAG)
 
-	-- gentle idle spin/float
+	-- gentle idle SPIN in place — rotates about the vertical axis through the podium center while
+	-- staying grounded (the old version added a sin() bob, which is what made them float/bob).
+	local spinAxis = Vector3.new(podium.Position.X, grounded.Y, podium.Position.Z)
+	local pivotOffset = grounded - spinAxis -- the pivot's horizontal offset from the spin axis
+	local baseRot = g.Rotation -- start from the model's authored facing, then yaw on top of it
 	task.spawn(function()
 		local t = 0
 		while model.Parent and model.PrimaryPart do
-			t += 0.06
-			local baseCf = CFrame.new(podium.Position.X, topY, podium.Position.Z)
-			model:PivotTo(baseCf * CFrame.Angles(0, t, 0) * CFrame.new(0, math.sin(t * 2) * 0.3, 0))
+			t += 0.04
+			local rot = CFrame.Angles(0, t, 0)
+			model:PivotTo(CFrame.new(spinAxis + rot:VectorToWorldSpace(pivotOffset)) * rot * baseRot)
 			task.wait(0.06)
 		end
 	end)
@@ -564,6 +781,8 @@ function BaseManager.refreshBrainrotLabel(player: Player, entry: any)
 	local model = models and models[entry.id]
 	if model then
 		setBrainrotLevelLabel(model, entry.level or 1)
+		local profile = PlayerData.get(player)
+		setBrainrotInfoIncome(model, entry, (profile and profile.Rebirths) or 0)
 	end
 end
 
@@ -594,46 +813,225 @@ local LADDER_H = FLOOR2_Y + 3 - 1             -- floor 1 (y=1) up to a bit above
 local LADDER_HOLE_HALF_X = 3.5                -- half-width of the floor-2 climb-through hole
 local LADDER_HOLE_FRONT_LZ = FLOOR.Z / 2 - 9  -- hole runs from here back to the back wall
 
--- Build ONE incubator unit (base + glass dome) at floor-XZ `cf`, wrapped in a Model so it
--- can be reparented out of Workspace to HIDE it (studs are decals, so transparency alone
--- wouldn't hide them). Returns a record driven by setIncubatorState. The ClickDetector
--- buys the next incubator when shown as a ghost.
+-- Build ONE incubator unit at floor-XZ `cf`, wrapped in a Model so it can be reparented
+-- OUT of Workspace to HIDE it. Clones the imported glass display-case model at
+-- ServerStorage.EggIncubatorModel (security-audited, 0 scripts), scaled to stand on the
+-- floor; if it's missing (e.g. a place built from src that doesn't ship it) it FALLS BACK to
+-- the old procedural metal base + glass-ball dome. Returns a record driven by
+-- setIncubatorState. The ClickDetector buys the next incubator when shown as a ghost. The
+-- record also carries the glass EGG ANCHOR (eggCF/eggHeight) so a hatching egg is shown
+-- INSIDE the case — see updateSlotEggs.
+local INCUBATOR_MODEL_NAME = "EggIncubatorModel"
+local INCUBATOR_TARGET_H = 9 -- the imported case is scaled to stand ~this tall
+local INCUBATOR_EGG_VOX = 10 -- voxel resolution of the in-case egg (chunky pixels, cheap)
+
+-- world-space AABB extents (Vector3) of a single (possibly rotated) BasePart
+local function partWorldExtent(p: BasePart): Vector3
+	local pcf, s = p.CFrame, p.Size
+	local r, u, l = pcf.RightVector, pcf.UpVector, pcf.LookVector
+	return Vector3.new(
+		math.abs(r.X) * s.X + math.abs(u.X) * s.Y + math.abs(l.X) * s.Z,
+		math.abs(r.Y) * s.X + math.abs(u.Y) * s.Y + math.abs(l.Y) * s.Z,
+		math.abs(r.Z) * s.X + math.abs(u.Z) * s.Y + math.abs(l.Z) * s.Z
+	)
+end
+
+-- the translucent glass tube of a cloned case (the only see-through part = where the egg goes)
+local function findGlass(root: Instance): BasePart?
+	local best: BasePart? = nil
+	for _, d in ipairs(root:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency > 0.1 and d.Transparency < 0.95 then
+			if (not best) or d.Size.Magnitude > (best :: BasePart).Size.Magnitude then
+				best = d
+			end
+		end
+	end
+	return best
+end
+
+-- the on-incubator progress-bar colours (match the old HUD: cyan while hatching, green when ready)
+local INC_BAR_PROGRESS = Color3.fromRGB(70, 205, 255)
+local INC_BAR_READY = Color3.fromRGB(70, 235, 95)
+-- in-plane spin of the on-incubator screen GUI (tune if the bar/text ever reads rotated)
+local SCREEN_SPIN = CFrame.Angles(0, 0, 0)
+
+-- Mount a progress-bar + countdown SurfaceGui on the TOP face of an invisible "host" part laid
+-- right over the incubator's dark front SCREEN plate (`faceCF`/`faceSize` — the black bar the user
+-- pointed to). Returns the fill Frame + countdown TextLabel; updateIncubatorProgress drives them.
+local function buildProgressScreen(parent: Instance, faceCF: CFrame, faceSize: Vector3): (Frame, TextLabel)
+	local host = Instance.new("Part")
+	host.Name = "ProgressScreen"
+	host.Anchored = true
+	host.CanCollide = false
+	host.CanQuery = false
+	host.Transparency = 1 -- invisible; the dark model plate underneath is the visible "screen"
+	host.Size = Vector3.new(faceSize.X, math.max(faceSize.Y, 0.08), faceSize.Z)
+	-- float just in front of the dark plate (along its outward normal) so the bar isn't z-fought
+	-- or hidden in the bezel recess; SCREEN_SPIN rotates the content in-plane if it reads rotated.
+	host.CFrame = faceCF * CFrame.new(0, 0.12, 0) * SCREEN_SPIN
+	host.Parent = parent
+
+	local sg = Instance.new("SurfaceGui")
+	sg.Name = "Screen"
+	sg.Face = Enum.NormalId.Top
+	sg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	sg.PixelsPerStud = 80
+	sg.LightInfluence = 0 -- always readable through the dim incubator glow
+	sg.Brightness = 1.5
+	sg.Parent = host
+
+	-- progress bar (fills the left ~64% of the screen)
+	local bg = Instance.new("Frame")
+	bg.Name = "BarBg"
+	bg.AnchorPoint = Vector2.new(0, 0.5)
+	bg.Position = UDim2.new(0.04, 0, 0.5, 0)
+	bg.Size = UDim2.new(0.64, 0, 0.42, 0)
+	bg.BackgroundColor3 = Color3.fromRGB(15, 16, 26)
+	bg.BorderSizePixel = 0
+	bg.Parent = sg
+	local bgCorner = Instance.new("UICorner")
+	bgCorner.CornerRadius = UDim.new(1, 0)
+	bgCorner.Parent = bg
+	local bgStroke = Instance.new("UIStroke")
+	bgStroke.Thickness = 2
+	bgStroke.Color = Color3.fromRGB(0, 0, 0)
+	bgStroke.Parent = bg
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = INC_BAR_PROGRESS
+	fill.BorderSizePixel = 0
+	fill.Parent = bg
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
+
+	-- countdown seconds, just to the RIGHT of the bar
+	local txt = Instance.new("TextLabel")
+	txt.Name = "Countdown"
+	txt.AnchorPoint = Vector2.new(1, 0.5)
+	txt.Position = UDim2.new(0.99, 0, 0.5, 0)
+	txt.Size = UDim2.new(0.28, 0, 0.8, 0)
+	txt.BackgroundTransparency = 1
+	txt.Font = Enum.Font.FredokaOne
+	txt.Text = ""
+	txt.TextColor3 = Color3.fromRGB(255, 255, 255)
+	txt.TextStrokeTransparency = 0
+	txt.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	txt.TextScaled = true
+	txt.TextXAlignment = Enum.TextXAlignment.Right
+	txt.Parent = sg
+
+	return fill, txt
+end
+
 local function buildIncubator(slot: number, cf: CFrame, index: number): any
 	local home = slotFolder[slot]
 	local unit = Instance.new("Model")
 	unit.Name = ("IncubatorUnit_%d"):format(index)
 	unit.Parent = home
 
-	local base = makePart({
-		Name = "Incubator",
-		Size = Vector3.new(5, 4.5, 4),
-		Color = Palette.Incubator,
-		Material = Enum.Material.Metal,
-		CFrame = cf * CFrame.new(0, 2.25, 0),
-		Parent = unit,
-	})
-	local dome = makePart({
-		Name = "Dome",
-		Shape = Enum.PartType.Ball,
-		Size = Vector3.new(3.4, 3.4, 3.4),
-		Color = Palette.Glass,
-		Material = Enum.Material.Glass,
-		Transparency = 0.4,
-		CanCollide = false,
-		CFrame = base.CFrame * CFrame.new(0, 2.6, 0),
-		Parent = unit,
-	})
+	local glass: BasePart
+	local solids: { { p: BasePart, t: number } } = {}
+	local screenFaceCF: CFrame? = nil -- the dark front "screen" plate the progress bar mounts on
+	local screenFaceSize: Vector3? = nil
+
+	local tmpl = ServerStorage:FindFirstChild(INCUBATOR_MODEL_NAME)
+	if tmpl and tmpl:IsA("Model") then
+		-- IMPORTED glass display-case: anchor, scale to ~target height, stand on the floor, and
+		-- FLIP 180° so its front "screen" faces the player (the user's incubators faced the wall).
+		local case = (tmpl :: Model):Clone()
+		case.Name = "Case"
+		for _, d in ipairs(case:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.Anchored = true
+			end
+		end
+		local _, s0 = case:GetBoundingBox()
+		if s0.Y > 0.01 then
+			pcall(function() case:ScaleTo(INCUBATOR_TARGET_H / s0.Y) end)
+		end
+		case:PivotTo(cf * CFrame.new(0, FLOOR.Y / 2, 0) * CFrame.Angles(0, math.pi, 0)) -- floor + 180° flip
+		case.Parent = unit
+		glass = findGlass(case) :: BasePart
+		for _, d in ipairs(case:GetDescendants()) do
+			if d:IsA("BasePart") then
+				table.insert(solids, { p = d, t = d.Transparency })
+				d.CanCollide = (d ~= glass) -- glass stays walk-through; the rest are solid
+				-- the dark, near-black front "screen" plate (where the progress bar mounts)
+				if d.Color.R < 0.3 and d.Color.G < 0.35 and d.Color.B < 0.4 then
+					screenFaceCF, screenFaceSize = d.CFrame, d.Size
+				end
+			end
+		end
+	else
+		-- PROCEDURAL fallback (old look): metal base + glass ball dome + a dark front screen plate.
+		local base = makePart({
+			Name = "Incubator",
+			Size = Vector3.new(5, 4.5, 4),
+			Color = Palette.Incubator,
+			Material = Enum.Material.Metal,
+			CFrame = cf * CFrame.new(0, 2.25, 0),
+			Parent = unit,
+		})
+		local dome = makePart({
+			Name = "Dome",
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.new(3.4, 3.4, 3.4),
+			Color = Palette.Glass,
+			Material = Enum.Material.Glass,
+			Transparency = 0.4,
+			CanCollide = false,
+			CFrame = base.CFrame * CFrame.new(0, 2.6, 0),
+			Parent = unit,
+		})
+		glass = dome
+		solids = { { p = base, t = 0 }, { p = dome, t = 0.4 } }
+		local plate = makePart({
+			Name = "ScreenPlate",
+			Size = Vector3.new(2.6, 0.14, 1.1),
+			Color = Color3.fromRGB(20, 22, 34),
+			Material = Enum.Material.SmoothPlastic,
+			NoStuds = true,
+			CanCollide = false,
+			CFrame = base.CFrame * CFrame.new(0, -1.4, 2.05) * CFrame.Angles(math.rad(-28), 0, 0),
+			Parent = unit,
+		})
+		screenFaceCF, screenFaceSize = plate.CFrame, plate.Size
+	end
+
+	-- EGG ANCHOR: the centre of the glass tube. The egg HEIGHT is a FIXED fit derived from the
+	-- glass interior — identical for every incubator and every rarity — so any placed egg is
+	-- normalised to the same size (only its colour varies). See updateSlotEggs.
+	local ge = partWorldExtent(glass)
+	local eggHeight = math.min(ge.Y * 0.6, math.min(ge.X, ge.Z) * 0.92)
+	local eggCF = CFrame.new(glass.Position)
+
+	-- DIM, near-neutral glow: just enough to read the egg's true rarity colour through the
+	-- glass without the case acting like a bright lamp (the user wanted incubation toned down).
 	local light = Instance.new("PointLight")
-	light.Color = Color3.fromRGB(150, 230, 255)
-	light.Brightness = 3
-	light.Range = 12
-	light.Parent = dome
+	light.Color = Color3.fromRGB(255, 250, 235)
+	light.Brightness = 0.5
+	light.Range = 9
+	light.Parent = glass
+
+	-- floating label, anchored just above the case
+	local caseCF, caseSize = unit:GetBoundingBox()
+	local labelAnchor = Instance.new("Part")
+	labelAnchor.Name = "LabelAnchor"
+	labelAnchor.Size = Vector3.new(1, 1, 1)
+	labelAnchor.Transparency = 1
+	labelAnchor.Anchored = true
+	labelAnchor.CanCollide = false
+	labelAnchor.CanQuery = false
+	labelAnchor.CFrame = CFrame.new(glass.Position.X, caseCF.Position.Y + caseSize.Y / 2 + 2, glass.Position.Z)
+	labelAnchor.Parent = unit
 	local bb = Instance.new("BillboardGui")
 	bb.Size = UDim2.new(0, 150, 0, 40)
-	bb.StudsOffset = Vector3.new(0, 4, 0)
 	bb.AlwaysOnTop = true
 	bb.MaxDistance = 140
-	bb.Parent = base
+	bb.Parent = labelAnchor
 	local lbl = Instance.new("TextLabel")
 	lbl.Size = UDim2.fromScale(1, 1)
 	lbl.BackgroundTransparency = 1
@@ -644,25 +1042,55 @@ local function buildIncubator(slot: number, cf: CFrame, index: number): any
 	lbl.TextStrokeTransparency = 0
 	lbl.Parent = bb
 
+	-- on-incubator progress bar + countdown (mounted on the dark front screen plate, if present)
+	local progFill: Frame? = nil
+	local progText: TextLabel? = nil
+	if screenFaceCF and screenFaceSize then
+		progFill, progText = buildProgressScreen(unit, screenFaceCF, screenFaceSize)
+	end
+
+	-- ClickDetector: GHOST → buys the next incubator; REAL + READY → collects the hatched brainrot
+	-- (the old bottom-right COLLECT button is gone — progress + collect now live on the incubator).
+	local rec
 	local click = Instance.new("ClickDetector")
-	click.MaxActivationDistance = 0 -- enabled only in the ghost (buy) state
-	click.Parent = base
+	click.MaxActivationDistance = 0
+	click.Parent = glass
 	click.MouseClick:Connect(function(clicker: Player)
-		if clicker ~= slotOccupant[slot] then
+		if not rec or clicker ~= slotOccupant[slot] then
 			return
 		end
-		local res = IncubationManager.unlockIncubator(clicker)
+		local res
+		if rec.mode == "ghost" then
+			res = IncubationManager.unlockIncubator(clicker)
+		elseif rec.mode == "real" and rec.ready then
+			res = IncubationManager.collect(clicker, index)
+		end
 		if res and res.ok == false and res.reason then
 			Net.getEvent("Notify"):FireClient(clicker, { title = "Incubator", text = res.reason, color = "Legendary" })
 		end
 	end)
 
-	return { model = unit, home = home, base = base, dome = dome, light = light, label = lbl, click = click, index = index, pos = base.Position }
+	rec = {
+		model = unit, home = home, index = index, pos = cf.Position,
+		glass = glass, glassT = glass.Transparency, solids = solids,
+		light = light, label = lbl, click = click,
+		eggCF = eggCF, eggHeight = eggHeight, eggModel = nil, eggRarity = nil,
+		mode = "hidden", ready = false, progFill = progFill, progText = progText,
+	}
+	return rec
 end
 
--- Drive an incubator unit's look: "real" (unlocked, solid + glowing), "ghost" (next to
--- buy, translucent + Buy label + clickable) or "hidden" (reparented out of Workspace).
+-- Drive an incubator unit's look: "real" (unlocked, solid + glowing), "ghost" (buyable,
+-- translucent + Buy label + clickable) or "hidden" (reparented out of Workspace). The
+-- hatching egg itself is shown/hidden separately by updateSlotEggs.
 local function setIncubatorState(rec: any, state: string, cost: number?, canAfford: boolean?)
+	rec.mode = state
+	if state ~= "real" then
+		-- leaving the active state: drop the collect-ready flag + clear the on-model progress bar
+		rec.ready = false
+		if rec.progFill then rec.progFill.Size = UDim2.new(0, 0, 1, 0) end
+		if rec.progText then rec.progText.Text = "" end
+	end
 	if state == "hidden" then
 		if rec.model.Parent ~= hiddenHolder then
 			rec.model.Parent = hiddenHolder
@@ -673,19 +1101,19 @@ local function setIncubatorState(rec: any, state: string, cost: number?, canAffo
 		rec.model.Parent = rec.home
 	end
 	if state == "real" then
-		rec.base.Transparency = 0
-		rec.base.CanCollide = true
-		rec.base.Color = Palette.Incubator
-		rec.dome.Transparency = 0.4
+		for _, s in ipairs(rec.solids) do
+			s.p.Transparency = s.t
+			s.p.CanCollide = (s.p ~= rec.glass)
+		end
 		rec.light.Enabled = true
-		rec.label.Text = ("🥚 INCUBATOR %d"):format(rec.index)
-		rec.label.TextColor3 = Color3.fromRGB(150, 230, 255)
-		rec.click.MaxActivationDistance = 0
+		-- the floating label + the ClickDetector range for REAL incubators are owned by
+		-- updateIncubatorProgress (idle / hatching / ready-to-collect) — don't set them here.
 	else -- ghost
-		rec.base.Transparency = 0.5
-		rec.base.CanCollide = false
-		rec.base.Color = Palette.Wall
-		rec.dome.Transparency = 0.85
+		for _, s in ipairs(rec.solids) do
+			s.p.Transparency = math.max(s.t, 0.7)
+			s.p.CanCollide = false
+		end
+		rec.glass.Transparency = 0.92
 		rec.light.Enabled = false
 		rec.label.Text = ("🔒 Buy Incubator\n$%s"):format(Format.short(cost or 0))
 		rec.label.TextColor3 = canAfford and Color3.fromRGB(150, 255, 150) or Color3.fromRGB(255, 200, 150)
@@ -747,10 +1175,14 @@ end
 -- wall" for you. Clicking it tries to rebirth the CLICKER, but only when THEY are
 -- currently in zone k. Its SurfaceGui shows a GENERIC shared label.
 local function buildSharedWall(k: number, cf: CFrame, parent: Instance)
+	-- zone1/2 (k==1) keeps the normal gate width (its sides are sealed by buildLaneFences).
+	-- deeper boundaries (k>=2): the gate ends just INSIDE the stone piles (no wall pokes through the
+	-- stone toward the border); the collidable stone piles + border cliff seal the rest of the lane.
+	local wallWidth = (k == 1) and REBIRTH_WALL.X or (2 * SEALED_WALL_HALF_X)
 	local wall = makePart({
 		Name = ("RebirthWall_%d"):format(k),
-		Size = REBIRTH_WALL,
-		Color = Palette.Wall,
+		Size = Vector3.new(wallWidth, REBIRTH_WALL.Y, REBIRTH_WALL.Z),
+		Color = Palette.ZoneWall,
 		Material = Enum.Material.Plastic,
 		Transparency = 0.05,
 		CFrame = cf,
@@ -772,7 +1204,7 @@ local function buildSharedWall(k: number, cf: CFrame, parent: Instance)
 	surf.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
 	surf.PixelsPerStud = 18
 	surf.LightInfluence = 0
-	surf.MaxDistance = 120
+	surf.MaxDistance = 0 -- 0 = NO distance limit: the wall text is readable from anywhere, not only up close
 	surf.Parent = wall
 
 	local function mkLabel(yScale: number, hScale: number): TextLabel
@@ -788,63 +1220,112 @@ local function buildSharedWall(k: number, cf: CFrame, parent: Instance)
 		return l
 	end
 
-	local title = mkLabel(0.16, 0.24)
+	-- BIGGER text, no arrow: the zone name on top + the cost to break below
+	local title = mkLabel(0.1, 0.38)
 	title.TextColor3 = Color3.fromRGB(255, 220, 120)
-	title.Text = ("➡ %s"):format(ZoneConfig.get(k + 1).DisplayName)
-	local line = mkLabel(0.5, 0.18)
-	line.Text = "Rebirth to unlock"
+	title.Text = ZoneConfig.get(k + 1).DisplayName
+	local line = mkLabel(0.55, 0.3)
+	line.Text = ("$%s to break"):format(Format.short(ZoneConfig.unlockCash(k + 1)))
 
+	-- Clicking the wall in front of your CURRENT zone spends CASH to break it and advance
+	-- into zone k+1 (zone progression is decoupled from rebirth). Walls re-lock on rebirth
+	-- (which resets CurrentZone to 1). Only the occupant of zone k can break wall k.
 	click.MouseClick:Connect(function(clicker: Player)
-		if not rebirthHandler then
-			return
-		end
 		local profile = PlayerData.get(clicker)
-		-- only the wall in front of the clicker's CURRENT zone advances them
 		if not profile or profile.CurrentZone ~= k then
 			return
 		end
-		local result = rebirthHandler(clicker)
-		if result and result.ok == false and result.reason then
-			Net.getEvent("Notify"):FireClient(clicker, {
-				title = "Wall Locked", text = result.reason, color = "Legendary",
-			})
+		local nextZone = k + 1
+		if nextZone > ZoneConfig.MaxZone then
+			return
 		end
+		local cost = ZoneConfig.unlockCash(nextZone)
+		if profile.Cash < cost then
+			Net.getEvent("Notify"):FireClient(clicker, {
+				title = "Wall Locked",
+				text = ("Need $%s to break this wall."):format(Format.short(cost)),
+				color = "Legendary",
+			})
+			return
+		end
+		profile.Cash -= cost
+		profile.CurrentZone = nextZone
+		PlayerData.markDirty(clicker)
+		PlayerData.push(clicker)
+		BaseManager.applyZoneGate(clicker) -- regroup so the just-broken wall now lets them pass
+		Net.getEvent("Notify"):FireClient(clicker, {
+			title = "Zone Unlocked!",
+			text = ("Welcome to %s!"):format(ZoneConfig.get(nextZone).DisplayName),
+			color = "Legendary",
+		})
 	end)
 end
 
 -- a physical dig area for `zone` at world position `pos`, styled exactly like the
 -- central green dig square (same size + grass) with a "DigPatch" slab + sign.
-local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent: Instance)
+-- `segOverride` / `digHalfOverride` let the LOBBY dig site (zone 1) be bigger than the
+-- standard SEG_SIZE / 40-stud core (see the ZONE1_DIG_* constants); nil => the defaults.
+local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent: Instance, segOverride: Vector3?, digHalfOverride: number?)
 	local zoneData = ZoneConfig.get(zone)
 	if not zoneData then
 		return
 	end
+	local seg = segOverride or SEG_SIZE
+	local digHalf = digHalfOverride or 40
 
 	-- rotate the pad/border to line up squarely with the lane direction
 	local yaw = math.atan2(farDir.X, farDir.Z)
 	local rot = CFrame.Angles(0, yaw, 0)
 
-	-- grass border (studded like the dig site); tagged so the checker overlays its top
+	local theme = zoneData.Theme
+	local isForest = theme == "Forest"
+	-- Themes with a SOLID-colour floor that FILLS the whole lane segment (no checker): Desert (sand)
+	-- and The Glaziers (ice). nil for grass/forest zones (which keep the small green checker frame).
+	local solidFloor: Color3? = nil
+	if theme == "Desert" then
+		solidFloor = Palette.Sand
+	elseif theme == "Glaciers" then
+		solidFloor = Palette.Ice
+	elseif theme == "Cavern" then
+		solidFloor = Palette.CavernFloor -- #1B3444 dark cavern floor (glowing decor pops against it)
+	end
+
+	-- floor border: solid-floor zones get a big segment-filling slab of their colour; grass/forest
+	-- get a small GREEN frame tagged GrassSurface (client overlays the two-green checker).
+	local borderSize = solidFloor
+		and Vector3.new(2 * LANE_SIDE_INNER_X + 2, 0.6, LANE_STEP - 4) -- fill the lane segment, edge-to-edge
+		or (seg + Vector3.new(12, -0.4, 12))
 	local zoneBorder = makePart({
 		Name = "ZoneBorder",
-		Size = SEG_SIZE + Vector3.new(12, -0.4, 12),
-		Color = Palette.Grass,
+		Size = borderSize,
+		Color = solidFloor or Palette.Grass,
 		CFrame = CFrame.new(pos.X, LANE_SEG_Y - 0.2, pos.Z) * rot,
 		Parent = parent,
 	})
-	CollectionService:AddTag(zoneBorder, "GrassSurface")
+	if not solidFloor then
+		CollectionService:AddTag(zoneBorder, "GrassSurface")
+	end
 
+	-- Dig plate colour: FOREST = grassy clearing, solid-floor zones = their sand/ice colour, else =
+	-- dark brown earth (darker than the tan client mounds). The client scatters tan dirt mounds on top.
+	local digColor = (isForest and Palette.Grass) or solidFloor or Palette.DigField
 	local dirt = makePart({
 		Name = ("Zone%dDig"):format(zone),
-		Size = SEG_SIZE,
-		-- the dig field's FIRST LAYER is a dark brown earth, deliberately DARKER than
-		-- the tan dirt mounds (~RGB 186,150,110) the client scatters on top of it.
-		Color = Palette.DigField,
+		Size = seg,
+		Color = digColor,
 		CFrame = CFrame.new(pos.X, LANE_SEG_Y, pos.Z) * rot,
 		Parent = parent,
 	})
 	CollectionService:AddTag(dirt, "DigPatch")
 	dirt:SetAttribute("Zone", zone)
+	-- the client scatters dig mounds only within +/-DigHalf of the centre (not the full slab),
+	-- so the expanded outer rim stays clear for grass / sand + sprinkled decor.
+	dirt:SetAttribute("DigHalf", digHalf)
+	if isForest then
+		-- match the surrounding grass: studded + the 6x6 two-green checker overlay
+		CollectionService:AddTag(dirt, "GrassSurface")
+	end
+	-- solid-floor zones (Desert / The Glaziers) leave the dig plate a flat colour (no checker)
 
 	local signPart = makePart({
 		Name = "ZoneSign",
@@ -872,27 +1353,33 @@ end
 -- the slot's name sign over the open front. Stored so its text can toggle between
 -- "OPEN PLOT N" (unoccupied) and "<player>'s Base" (occupied).
 local function buildBaseSign(slot: number, origin: CFrame, parent: Instance)
-	local signPart = makePart({
-		Name = "Sign",
-		Size = Vector3.new(1, 1, 1),
-		Transparency = 1,
-		CFrame = origin * CFrame.new(0, 1 + WALL_H + 3, -FLOOR.Z / 2),
+	-- a PHYSICAL name plate mounted on the FRONT TOP FRAME (the floor-1 header), facing the
+	-- courtyard, so everyone can read whose base it is. assignBase/freeBase set its text.
+	local plate = makePart({
+		Name = "NamePlate",
+		Size = Vector3.new(FLOOR.X * 0.62, 5, 0.6),
+		Color = Palette.BaseTrim,
+		Material = Enum.Material.Metal,
+		NoStuds = true,
+		CFrame = origin * CFrame.new(0, 1 + WALL_H - 2, -FLOOR.Z / 2 - WALL_T / 2 - 0.3),
 		Parent = parent,
 	})
-	local bb = Instance.new("BillboardGui")
-	bb.Size = UDim2.new(0, 190, 0, 40)
-	bb.AlwaysOnTop = true
-	bb.MaxDistance = 200
-	bb.Parent = signPart
+	local sg = Instance.new("SurfaceGui")
+	sg.Name = "NameGui"
+	sg.Face = Enum.NormalId.Front -- the part's -Z face = the building front (faces the courtyard)
+	sg.CanvasSize = Vector2.new(900, 130)
+	sg.LightInfluence = 0
+	sg.Parent = plate
 	local lbl = Instance.new("TextLabel")
 	lbl.Size = UDim2.fromScale(1, 1)
 	lbl.BackgroundTransparency = 1
 	lbl.Font = Enum.Font.FredokaOne
 	lbl.TextScaled = true
-	lbl.Text = ("🟢 OPEN PLOT %d"):format(slot)
+	lbl.Text = ("OPEN PLOT %d"):format(slot)
 	lbl.TextColor3 = Color3.fromRGB(120, 220, 255)
-	lbl.TextStrokeTransparency = 0
-	lbl.Parent = bb
+	lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	lbl.TextStrokeTransparency = 0.3
+	lbl.Parent = sg
 	slotSign[slot] = lbl
 end
 
@@ -907,47 +1394,66 @@ end
 local function buildBuilding(slot: number, origin: CFrame, parent: Instance)
 	local wallColor = Palette.BaseWall
 	local trimColor = Palette.BaseTrim
+	local accent = Palette.Cyan -- matte (non-neon) accent for the walkway + wall trim
 
 	local f2 = Instance.new("Folder")
 	f2.Name = "Floor2"
 	f2.Parent = parent
 	slotFloor2[slot] = f2
 
-	-- per-floor side window section (glass strip + brick above/below). `dest` routes the
-	-- parts to floor 1 (parent) or floor 2 (f2).
-	local function sideFloor(x: number, baseLY: number, dest: Instance)
-		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, 7, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + 3.5, 0), Parent = dest })
-		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, 7, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + WALL_H - 3.5, 0), Parent = dest })
-		makePart({ Name = "Window", Size = Vector3.new(WALL_T * 0.5, 8, FLOOR.Z - 5), Color = Palette.Glass, Material = Enum.Material.Glass, Transparency = 0.5, CanCollide = false, CFrame = origin * CFrame.new(x, baseLY + WALL_H / 2, 0), Parent = dest })
+	-- a SOLID side wall for one floor (NO windows) + a matte accent baseboard stripe.
+	-- `dest` routes the parts to floor 1 (parent) or floor 2 (f2).
+	local function sideWall(x: number, baseLY: number, dest: Instance)
+		makePart({ Name = "Wall", Size = Vector3.new(WALL_T, WALL_H, FLOOR.Z), Color = wallColor, Material = Enum.Material.Brick, CFrame = origin * CFrame.new(x, baseLY + WALL_H / 2, 0), Parent = dest })
+		makePart({ Name = "WallTrim", Size = Vector3.new(WALL_T + 0.4, 1.4, FLOOR.Z), Color = accent, CFrame = origin * CFrame.new(x, baseLY + 0.7, 0), Parent = dest })
 	end
 
 	-- side walls + corner pillars, split per floor so the upper halves can hide.
 	local pillarH = WALL_H + WALL_T
 	for _, sx in ipairs({ -1, 1 }) do
 		local x = sx * (FLOOR.X / 2)
-		sideFloor(x, 1, parent)       -- floor 1
-		sideFloor(x, FLOOR2_Y, f2)    -- floor 2 (hidden until ladder)
+		sideWall(x, 1, parent)       -- floor 1
+		sideWall(x, FLOOR2_Y, f2)    -- floor 2 (walls hidden until ladder)
 		for _, lz in ipairs({ -FLOOR.Z / 2, FLOOR.Z / 2 }) do
 			makePart({ Name = "Pillar", Size = Vector3.new(WALL_T + 1.5, pillarH, WALL_T + 1.5), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(x, 1 + pillarH / 2, lz), Parent = parent })
 			makePart({ Name = "Pillar", Size = Vector3.new(WALL_T + 1.5, pillarH, WALL_T + 1.5), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(x, FLOOR2_Y + pillarH / 2, lz), Parent = f2 })
 		end
 	end
 
-	-- floor-1 slab
-	makePart({ Name = "Platform", Size = FLOOR, Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin, Parent = parent })
-
-	-- floor-2 slab (in f2) with a back-center HOLE the ladder climbs through.
-	do
-		local slabMidY = FLOOR2_Y - WALL_T / 2
-		local sideW = FLOOR.X / 2 - LADDER_HOLE_HALF_X
-		for _, sx in ipairs({ -1, 1 }) do
-			makePart({ Name = "Floor2Slab", Size = Vector3.new(sideW, WALL_T, FLOOR.Z), Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin * CFrame.new(sx * (LADDER_HOLE_HALF_X + sideW / 2), slabMidY, 0), Parent = f2 })
+	-- floor slab + a central WALK PATH runway down the middle (front opening -> back wall),
+	-- flanking the two podium rows. Matte studded — a clean accent, not a glow.
+	local function walkway(baseLY: number, dest: Instance)
+		-- run from near the front opening to JUST BEFORE the ladder hole, so the floor-2
+		-- walkway never covers the hole (which would block climbing up to floor 2).
+		local backZ = LADDER_HOLE_FRONT_LZ - 2
+		local frontZ = -FLOOR.Z / 2 + 2
+		local len = backZ - frontZ
+		local cz = (backZ + frontZ) / 2
+		makePart({ Name = "WalkPath", Size = Vector3.new(12, 0.3, len), Color = trimColor, CFrame = origin * CFrame.new(0, baseLY + 0.15, cz), Parent = dest })
+		for _, ex in ipairs({ -1, 1 }) do
+			makePart({ Name = "WalkEdge", Size = Vector3.new(0.7, 0.34, len), Color = accent, CFrame = origin * CFrame.new(ex * 6, baseLY + 0.17, cz), Parent = dest })
 		end
-		local frontLen = LADDER_HOLE_FRONT_LZ - (-FLOOR.Z / 2) -- front edge to the hole
-		makePart({ Name = "Floor2Slab", Size = Vector3.new(2 * LADDER_HOLE_HALF_X, WALL_T, frontLen), Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin * CFrame.new(0, slabMidY, -FLOOR.Z / 2 + frontLen / 2), Parent = f2 })
 	end
+	makePart({ Name = "Platform", Size = FLOOR, Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin, Parent = parent })
+	walkway(1, parent)      -- floor-1 runway (always visible)
+	walkway(FLOOR2_Y, f2)   -- floor-2 runway (revealed with floor 2)
 
-	-- roof + headers + floor-2 rail (roof, upper header & rail are floor-2)
+	-- FLOOR-2 FLOOR SLAB = a permanent ROOF over floor 1 (ALWAYS visible). It carries the
+	-- back-center ladder hole; a removable HATCH (toggled in refreshBaseProgression) keeps
+	-- the roof solid until the ladder is bought, then opens so the player can climb up.
+	local slabMidY = FLOOR2_Y - WALL_T / 2
+	local sideW = FLOOR.X / 2 - LADDER_HOLE_HALF_X
+	for _, sx in ipairs({ -1, 1 }) do
+		makePart({ Name = "Floor1Ceiling", Size = Vector3.new(sideW, WALL_T, FLOOR.Z), Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin * CFrame.new(sx * (LADDER_HOLE_HALF_X + sideW / 2), slabMidY, 0), Parent = parent })
+	end
+	local frontLen = LADDER_HOLE_FRONT_LZ - (-FLOOR.Z / 2) -- front edge to the hole
+	makePart({ Name = "Floor1Ceiling", Size = Vector3.new(2 * LADDER_HOLE_HALF_X, WALL_T, frontLen), Color = Palette.BaseFloor, Material = Enum.Material.Plastic, CFrame = origin * CFrame.new(0, slabMidY, -FLOOR.Z / 2 + frontLen / 2), Parent = parent })
+	-- the closable hatch filling the back-center ladder hole (roof complete while locked)
+	local holeLen = FLOOR.Z / 2 - LADDER_HOLE_FRONT_LZ
+	slotCeilingHatch[slot] = makePart({ Name = "CeilingHatch", Size = Vector3.new(2 * LADDER_HOLE_HALF_X, WALL_T, holeLen), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, slabMidY, LADDER_HOLE_FRONT_LZ + holeLen / 2), Parent = parent })
+
+	-- top roof (above floor 2) + headers + floor-2 rail — floor-2 structure (gated by ladder),
+	-- EXCEPT the floor-1 front header (always visible — it carries the name plate).
 	local roofY = 1 + 2 * WALL_H + WALL_T + WALL_T / 2
 	makePart({ Name = "Roof", Size = Vector3.new(FLOOR.X + 3, WALL_T, FLOOR.Z + 3), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, roofY, 0), Parent = f2 })
 	makePart({ Name = "Header", Size = Vector3.new(FLOOR.X, 4, WALL_T), Color = trimColor, Material = Enum.Material.Metal, CFrame = origin * CFrame.new(0, 1 + WALL_H - 2, -FLOOR.Z / 2), Parent = parent })
@@ -1008,12 +1514,29 @@ function BaseManager.applyZoneGate(player: Player)
 		return
 	end
 	local profile = PlayerData.get(player)
-	local level = profile and ZoneConfig.highestUnlocked(profile.Rebirths) or 1
+	local level = profile and profile.CurrentZone or 1
 	local group = ZONE_PROG .. math.clamp(level, 1, ZoneConfig.MaxZone)
+	char:SetAttribute("ZoneGroup", group)
 	for _, part in ipairs(char:GetDescendants()) do
 		if part:IsA("BasePart") then
 			pcall(function() part.CollisionGroup = group end)
 		end
+	end
+	-- ALSO group any part that streams in AFTER this call. A respawn fires CharacterAdded
+	-- before every limb/accessory exists; a missed part stays in "Default", which the zone
+	-- walls DO block — so a player who has unlocked the next zone could still get STUCK at the
+	-- wall on that one part. The hook reads the live ZoneGroup attribute so it stays correct
+	-- across rebirths. (Hooked once per character.)
+	if not char:GetAttribute("__zoneGateHooked") then
+		char:SetAttribute("__zoneGateHooked", true)
+		char.DescendantAdded:Connect(function(d)
+			if d:IsA("BasePart") then
+				local g = char:GetAttribute("ZoneGroup")
+				if g then
+					pcall(function() d.CollisionGroup = g end)
+				end
+			end
+		end)
 	end
 end
 
@@ -1122,9 +1645,12 @@ end
 local function buildLaneFences()
 	local wallZ = LANE_START + LANE_STEP / 2 -- zone1/2 (k=1) wall center z
 	local wallHalfX = REBIRTH_WALL.X / 2
+	-- anchor each side fence to the END plot on that side (the arc tips). The tip slots are found
+	-- from SLOT_ANGLE (most-negative = left, most-positive = right), so this stays correct as the
+	-- slot count / gap layout changes.
 	for _, fence in ipairs({
-		{ slot = 9, sign = -1, name = "ZoneFence_Left" },
-		{ slot = 10, sign = 1, name = "ZoneFence_Right" },
+		{ slot = TIP_SLOT_LEFT, sign = -1, name = "ZoneFence_Left" },
+		{ slot = TIP_SLOT_RIGHT, sign = 1, name = "ZoneFence_Right" },
 	}) do
 		local wallEnd = Vector3.new(fence.sign * wallHalfX, 0, wallZ) -- end of the wall on this side
 		-- anchor at the end-plot footprint CORNER nearest that wall end, so it meets the
@@ -1163,6 +1689,72 @@ local function buildLaneFences()
 	end
 end
 
+-- A THIN, BROKEN post-and-rail fence: thinner boards than the lane fence, with random MISSING
+-- posts, LEANING posts (pivoting from the ground), broken-short tops, and GAPPY rails — so the
+-- dig site reads as a derelict / actively-excavated pit. Seeded RNG keeps the broken pattern
+-- stable across rebuilds. Local +Z is the run direction; non-collidable (decorative only).
+local function buildBrokenFence(baseCF: CFrame, length: number, parent: Instance, seed: number)
+	local rng = Random.new(seed)
+	local POST_W, RAIL_W = 1.0, 0.5 -- thinner boards (the lane fence uses 1.8 / 0.9)
+	local n = math.max(2, math.floor(length / 5) + 1) -- a post roughly every 5 studs
+	local present, topH = {}, {}
+	for i = 0, n - 1 do
+		local lz = -length / 2 + (i / (n - 1)) * length
+		present[i] = rng:NextNumber() > 0.18 -- ~18% of posts knocked out (gaps)
+		if present[i] then
+			local broken = rng:NextNumber() < 0.25 -- some snapped off short
+			local h = FENCE_VIS_H * (broken and (0.4 + rng:NextNumber() * 0.35) or (0.88 + rng:NextNumber() * 0.12))
+			topH[i] = h
+			makePart({
+				Name = "DigFencePost",
+				Size = Vector3.new(POST_W, h, POST_W),
+				Color = Palette.Fence,
+				CanCollide = false,
+				-- pivot the lean from the GROUND (translate to base, rotate, then raise by h/2)
+				CFrame = baseCF * CFrame.new(0, 0, lz)
+					* CFrame.Angles((rng:NextNumber() - 0.5) * 0.45, 0, (rng:NextNumber() - 0.5) * 0.3)
+					* CFrame.new(0, h / 2, 0),
+				Parent = parent,
+			})
+		end
+	end
+	for _, frac in ipairs({ 0.36, 0.72 }) do -- two rail courses, built segment-by-segment
+		for i = 0, n - 2 do
+			if present[i] and present[i + 1] and rng:NextNumber() > 0.25 then -- ~25% of segments broken out
+				local z1 = -length / 2 + (i / (n - 1)) * length
+				local z2 = -length / 2 + ((i + 1) / (n - 1)) * length
+				local ry = math.min(FENCE_VIS_H * frac + (rng:NextNumber() - 0.5) * 1.2, math.min(topH[i], topH[i + 1]) - 0.6)
+				makePart({
+					Name = "DigFenceRail",
+					Size = Vector3.new(RAIL_W, 0.9, (z2 - z1) + 0.2),
+					Color = Palette.Fence,
+					CanCollide = false,
+					CFrame = baseCF * CFrame.new(0, ry, (z1 + z2) / 2) * CFrame.Angles((rng:NextNumber() - 0.5) * 0.12, 0, 0),
+					Parent = parent,
+				})
+			end
+		end
+	end
+end
+
+-- A THIN, BROKEN fence around the Zone-1 (lobby) dig site on THREE sides: the front (-Z, lobby
+-- side) and both flanks (±X). The +Z side is left OPEN — that's where the zone-1/2 rebirth wall
+-- sits and players pass through to the next zone. The gaps/leaning boards make it read like an
+-- active excavation site; non-collidable so it never blocks digging or walking in.
+local function buildZone1DigFence()
+	local cx = MapBuilder.DigCenter.X
+	local digCz = LANE_START + ZONE1_DIG_SHIFT_Z -- dig-patch centre Z
+	local halfX, halfZ = ZONE1_DIG_SIZE.X / 2, ZONE1_DIG_SIZE.Z / 2
+	local MARGIN = 3 -- sit the fence this far out on the grass, just past the brown pit edge
+	local fx = halfX + MARGIN
+	local frontZ = digCz - halfZ - MARGIN -- the -Z (lobby) edge we fence
+	local openZ = digCz + halfZ -- the +Z edge nearest the zone wall — left OPEN
+	buildBrokenFence(CFrame.new(cx, 1, frontZ) * CFrame.Angles(0, math.rad(90), 0), fx * 2, laneFolder, 101) -- front
+	local sideLen, sideMidZ = openZ - frontZ, (openZ + frontZ) / 2
+	buildBrokenFence(CFrame.new(cx - fx, 1, sideMidZ), sideLen, laneFolder, 202) -- left
+	buildBrokenFence(CFrame.new(cx + fx, 1, sideMidZ), sideLen, laneFolder, 303) -- right
+end
+
 -- TWO grass-topped DIRT CLIFFS flanking the dig lane, running parallel to it (+Z),
 -- just outside the forest strip. They replace the old map-wide snow border on these
 -- sides and TIGHTEN the playable width. They DON'T block bases: they start past the
@@ -1199,6 +1791,168 @@ local function buildLaneSideWalls()
 			Parent = laneFolder,
 		})
 		CollectionService:AddTag(grassCap, "GrassSurface")
+	end
+end
+
+-- The THREE-TIER lobby rampart (see the LOBBY_WALL_* notes). A faceted horseshoe of straight
+-- segments + angled corners wraps the OUTSIDE of the base ring as three FLUSH stepped tiers (short
+-- inner -> tall outer) — one continuous stepped mass, no gaps between layers. Each tier is built
+-- from a FEW chunky blocks with BIG per-block height jumps (jagged, bold) for a natural cliff look.
+-- The inner + middle tiers run their FRONT segments along X and butt into the lane border walls'
+-- OUTER face perpendicularly (both sides, past the end plots) so they never sit inside a plot or
+-- cross to the lane side; the TALLEST outer tier stops short of the lane for a fading / mountain-end
+-- taper. Seeded so the layout is identical every build (LOBBY_WALL_SEED).
+local function buildLobbyWall()
+	local rng = Random.new(LOBBY_WALL_SEED)
+	local rockRng = Random.new(LOBBY_WALL_SEED + 4242) -- SEPARATE stream so rocks never shift the wall blocks
+	local laneX = LANE_SIDE_INNER_X + LANE_SIDE_THICK / 2   -- 110 — lane wall centre x
+	local connX = laneX + LANE_SIDE_THICK / 2               -- 120 — lane wall OUTER face: connect HERE so the wall doesn't poke through to the lane side
+
+	-- a slightly varied studded stone colour for a sprinkled rock (own rng — see above)
+	local function jitterStone(): Color3
+		local j = (rockRng:NextNumber() - 0.5) * 0.08
+		local c = Palette.Stone
+		return Color3.new(math.clamp(c.R + j, 0, 1), math.clamp(c.G + j, 0, 1), math.clamp(c.B + j, 0, 1))
+	end
+
+	-- candidate rock spots (one per wall-block top); rocks are chosen from these AFTER all blocks
+	-- exist, balanced left/right, so neither side gets crowded.
+	local rockSpots: { { x: number, z: number, y: number, angle: number } } = {}
+
+	-- build ONE rock on the ledge at (rx, rz, topY): a WIDE LOW base + two smaller, taller bumps
+	-- => a chunky, stepped, rectangular boulder with texture. Squared to the wall by `angle`.
+	local function placeRock(rx: number, rz: number, topY: number, angle: number)
+		local bw = rockRng:NextNumber(LOBBY_WALL_ROCK_MIN, LOBBY_WALL_ROCK_MAX)
+		local bd = bw * rockRng:NextNumber(0.8, 1.1)
+		for bi = 1, 3 do
+			local wide = (bi == 1)
+			local pw = math.max(4, bw * (wide and rockRng:NextNumber(0.85, 1.0) or rockRng:NextNumber(0.45, 0.75)))
+			local pd = math.max(4, bd * (wide and rockRng:NextNumber(0.85, 1.0) or rockRng:NextNumber(0.45, 0.75)))
+			local ph = wide and rockRng:NextNumber(4, 6) or rockRng:NextNumber(7, 12) -- base low, bumps tall
+			local ox = (rockRng:NextNumber() - 0.5) * bw * (wide and 0.1 or 0.5)       -- base centred; bumps offset to peek out
+			local oz = (rockRng:NextNumber() - 0.5) * bd * (wide and 0.1 or 0.5)
+			makePart({
+				Name = "LobbyWallRock",
+				Size = Vector3.new(pw, ph, pd),
+				Color = jitterStone(),
+				CanCollide = false,
+				CFrame = CFrame.new(rx + ox, topY + ph / 2, rz + oz)
+					* CFrame.Angles(0, angle + (rockRng:NextNumber() - 0.5) * 0.25, 0),
+				Parent = laneFolder,
+			})
+		end
+	end
+
+	-- the faceted horseshoe's SIDE + BACK vertices (right-upper around the back to left-upper). These
+	-- are pushed OUT radially per terrace; the FRONT runs (lane-border joins) are added per terrace.
+	local mids = {
+		Vector3.new(290, 0, -30),    -- right upper side (angled corner)
+		Vector3.new(255, 0, -185),   -- right lower side
+		Vector3.new(125, 0, -288),   -- right back corner
+		Vector3.new(-125, 0, -288),  -- left back corner
+		Vector3.new(-255, 0, -185),  -- left lower side
+		Vector3.new(-290, 0, -30),   -- left upper side (angled corner)
+	}
+	local FRONT_X = 256  -- |x| of each front-side vertex BEFORE the per-terrace push (clears the end plots, which reach x=248)
+
+	-- one dirt block + grass cap of a terrace, centred at `center`, turned by `angle`, `len` long, `h` tall
+	local function block(center: Vector3, angle: number, len: number, h: number)
+		local cf = CFrame.new(center.X, 0, center.Z) * CFrame.Angles(0, angle, 0) -- local Z = along the run
+		makePart({
+			Name = "LobbyWallDirt",
+			Size = Vector3.new(LOBBY_WALL_THICK, h, len),
+			Color = Palette.Dirt,
+			CanCollide = true,
+			CFrame = cf * CFrame.new(0, 1 + h / 2, 0),
+			Parent = laneFolder,
+		})
+		local cap = makePart({
+			Name = "LobbyWallGrass",
+			Size = Vector3.new(LOBBY_WALL_THICK + 4, LOBBY_WALL_CAP_H, len + 1),
+			Color = Palette.Grass,
+			CanCollide = true,
+			CFrame = cf * CFrame.new(0, 1 + h + LOBBY_WALL_CAP_H / 2, 0),
+			Parent = laneFolder,
+		})
+		CollectionService:AddTag(cap, "GrassSurface")
+	end
+
+	-- a terrace run through `pts` at nominal height `nominalH`: each segment is chopped into ~SUBLEN
+	-- blocks whose heights wobble (jagged top); blocks overlap (len + THICK) so there are no seams.
+	local function run(pts: { Vector3 }, nominalH: number)
+		for i = 1, #pts - 1 do
+			local p, q = pts[i], pts[i + 1]
+			local dx, dz = q.X - p.X, q.Z - p.Z
+			local segLen = math.sqrt(dx * dx + dz * dz)
+			if segLen >= 1 then
+				local angle = math.atan2(dx, dz)
+				local ux, uz = dx / segLen, dz / segLen
+				local nb = math.max(1, math.floor(segLen / LOBBY_WALL_SUBLEN + 0.5))
+				local bl = segLen / nb
+				for b = 0, nb - 1 do
+					local t = bl * (b + 0.5)
+					local center = Vector3.new(p.X + ux * t, 0, p.Z + uz * t)
+					local h = math.max(8, nominalH + rng:NextNumber(-LOBBY_WALL_H_JITTER, LOBBY_WALL_H_JITTER))
+					block(center, angle, bl + LOBBY_WALL_THICK, h)
+					-- record this ledge top as a candidate rock spot, JITTERED along + across the ledge so the
+					-- chosen rocks don't sit on a regular grid (they read as randomly scattered)
+					local jA = (rockRng:NextNumber() - 0.5) * bl * 0.85
+					local jX = (rockRng:NextNumber() - 0.5) * LOBBY_WALL_THICK * 0.35
+					rockSpots[#rockSpots + 1] = {
+						x = center.X + ux * jA + uz * jX,
+						z = center.Z + uz * jA - ux * jX,
+						y = 1 + h + LOBBY_WALL_CAP_H,
+						angle = angle,
+					}
+				end
+			end
+		end
+	end
+
+	-- build one terrace: push the side/back vertices OUT by terr.off (+ radial wobble); the front-side
+	-- vertices sit at +/-(FRONT_X + off) at the tier's frontZ; if terr.front, a perpendicular run joins
+	-- each side to the lane border wall (connX) — otherwise the tier just ends at its front-side (fade).
+	local function buildTerrace(terr)
+		local off, fz = terr.off, terr.frontZ
+		local fx = FRONT_X + off
+		local pts = {}
+		if terr.front then pts[#pts + 1] = Vector3.new(connX, 0, fz) end  -- right lane-border join
+		pts[#pts + 1] = Vector3.new(fx, 0, fz)                            -- right front-side
+		for _, v in ipairs(mids) do
+			local r = math.sqrt(v.X * v.X + v.Z * v.Z)
+			local s = (r + off + rng:NextNumber(-LOBBY_WALL_R_JITTER, LOBBY_WALL_R_JITTER)) / r
+			pts[#pts + 1] = Vector3.new(v.X * s, 0, v.Z * s)
+		end
+		pts[#pts + 1] = Vector3.new(-fx, 0, fz)                           -- left front-side
+		if terr.front then pts[#pts + 1] = Vector3.new(-connX, 0, fz) end -- left lane-border join
+		run(pts, terr.h)
+	end
+
+	for _, terr in ipairs(LOBBY_WALL_TERRACES) do
+		buildTerrace(terr)
+	end
+
+	-- pick rocks BALANCED left/right (x<0 vs x>0) from all ledge tops, so neither side crowds.
+	local leftSpots, rightSpots = {}, {}
+	for _, s in ipairs(rockSpots) do
+		if s.x < 0 then leftSpots[#leftSpots + 1] = s else rightSpots[#rightSpots + 1] = s end
+	end
+	local function shuffle(t)
+		for i = #t, 2, -1 do
+			local j = rockRng:NextInteger(1, i)
+			t[i], t[j] = t[j], t[i]
+		end
+	end
+	shuffle(leftSpots)
+	shuffle(rightSpots)
+	local perSide = math.floor(LOBBY_WALL_ROCK_TOTAL / 2)
+	for i = 1, math.min(perSide, #leftSpots) do
+		local s = leftSpots[i]
+		placeRock(s.x, s.z, s.y, s.angle)
+	end
+	for i = 1, math.min(perSide, #rightSpots) do
+		local s = rightSpots[i]
+		placeRock(s.x, s.z, s.y, s.angle)
 	end
 end
 
@@ -1259,13 +2013,15 @@ local function buildRockPile(base: Vector3, height: number)
 	end
 end
 
--- frame BOTH ends of the rebirth wall at lane-z `wz` with stone piles.
-local function buildWallFrame(wz: number)
+-- frame BOTH ends of a wall at lane-z `wz` with stone piles. `pileX` is the |x| the piles
+-- CENTER on; defaults to just past the normal wall end (~66, near the dig site). Pass a larger
+-- value (the wide fence-less walls) to sit the piles OUT against the map borders.
+local function buildWallFrame(wz: number, pileX: number?)
 	local x = MapBuilder.DigCenter.X
-	local endX = REBIRTH_WALL.X / 2    -- wall ends at +/-50
-	local pileH = REBIRTH_WALL.Y + 12  -- rise a bit above the 44-tall wall
+	local px = pileX or (REBIRTH_WALL.X / 2 + 4) -- default ~66: just past the normal wall end
+	local pileH = REBIRTH_WALL.Y + 12            -- rise a bit above the 44-tall wall
 	for _, sign in ipairs({ -1, 1 }) do
-		buildRockPile(Vector3.new(x + sign * (endX + 4), 0, wz), pileH)
+		buildRockPile(Vector3.new(x + sign * px, 0, wz), pileH)
 	end
 end
 
@@ -1345,7 +2101,7 @@ end
 
 -- place ONE tree (real asset clone if available, else procedural) standing on the
 -- ground at (x, z), scaled to ~targetH studs tall and randomly spun about Y.
-local function placeTree(x: number, z: number, targetH: number, parent: Instance)
+local function placeTree(x: number, z: number, targetH: number, parent: Instance, collide: boolean?)
 	local tmpl = getTreeTemplate()
 	local tree: Model = (tmpl and tmpl:Clone()) or buildProceduralTree()
 	tree.Name = "Tree"
@@ -1360,16 +2116,42 @@ local function placeTree(x: number, z: number, targetH: number, parent: Instance
 	-- spin about the vertical axis through its center
 	local rot = CFrame.new(center) * CFrame.Angles(0, math.rad(decorRng:NextInteger(0, 359)), 0) * CFrame.new(center):Inverse()
 	tree:PivotTo(rot * tree:GetPivot())
+	-- trees default to SOLID; pass collide=false for decoration that shouldn't block walking
+	if collide == false then
+		for _, d in ipairs(tree:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.CanCollide = false
+			end
+		end
+	end
 	tree.Parent = parent
+end
+
+-- a FEW small trees sprinkled INSIDE the forest dig clearing's grassy rim, placed in a ring
+-- at radius `RING` so they sit OUTSIDE the central +/-40 mound core (never on a dig spot).
+-- Non-collidable so they never block the player running between dig mounds.
+local function buildForestClearingTrees(centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local RING = 54 -- > DigHalf(40) + canopy, < dig slab half(60) — clears the mounds, stays on the clearing
+	-- corner + a couple edge anchors (unit offsets); jitter is tiny so none drift onto the core
+	local spots = {
+		{ 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }, -- 4 corners
+		{ 1, 0.2 }, { -1, -0.2 },                    -- 2 edge-ish (sprinkle)
+	}
+	for _, s in ipairs(spots) do
+		local x = cx + s[1] * RING + (decorRng:NextNumber() - 0.5) * 4
+		local z = centerZ + s[2] * RING + (decorRng:NextNumber() - 0.5) * 4
+		placeTree(x, z, decorRng:NextInteger(13, 18) + decorRng:NextNumber(), laneFolder, false)
+	end
 end
 
 -- scatter trees in the LEFT and RIGHT strips flanking a Forest dig site, within the
 -- z range between its walls and clear of the 96-wide dig square. NEVER on the lane.
 local function buildForestTrees(zLo: number, zHi: number)
 	local cx = MapBuilder.DigCenter.X
-	local innerX = SEG_SIZE.X / 2 + 12 -- clear of the dig square + margin
-	local outerX = innerX + 64         -- strip ~64 studs wide
-	local step = 19
+	local innerX = SEG_SIZE.X / 2 + 6 -- = 66, just clear of the dig square
+	local outerX = innerX + 18        -- thin strip; trees stay INSIDE the compacted lane wall (cap inner ~x98) — no overlap
+	local step = 16
 	for _, sign in ipairs({ -1, 1 }) do
 		local gx = innerX
 		while gx <= outerX do
@@ -1378,7 +2160,7 @@ local function buildForestTrees(zLo: number, zHi: number)
 				if decorRng:NextNumber() < 0.7 then -- gaps => natural forest edge
 					local x = cx + sign * (gx + (decorRng:NextNumber() - 0.5) * step * 0.8)
 					local z = gz + (decorRng:NextNumber() - 0.5) * step * 0.8
-					placeTree(x, z, decorRng:NextInteger(16, 26) + decorRng:NextNumber(), laneFolder)
+					placeTree(x, z, decorRng:NextInteger(12, 18) + decorRng:NextNumber(), laneFolder)
 				end
 				gz = gz + step
 			end
@@ -1387,19 +2169,719 @@ local function buildForestTrees(zLo: number, zHi: number)
 	end
 end
 
--- frame every rebirth wall with rock piles + add per-zone theme decor (trees).
+------------------------------------------------------------- forest ground cover
+-- A FEW small trees standing INSIDE the dig clearing core (within the +/-DigHalf region
+-- where mounds spawn). Each gets an INVISIBLE no-dig marker (tagged DigExclusion, with a
+-- ClearRadius + Zone) so the client (DigSite.scatterPatch) never drops a dirt mound on/near
+-- the tree. NON-collidable so a tree standing among the mounds never traps a digging player.
+local DIG_EXCLUSION_TAG = "DigExclusion"
+-- Drop an INVISIBLE "no-dig" marker at (x,z): the client (DigSite.scatterPatch) never scatters a
+-- dirt mound within `radius` of it, so eggs never spawn on top of digsite decor (trees/cacti/rocks).
+local function addDigExclusion(x: number, z: number, radius: number, zone: number)
+	local marker = makePart({
+		Name = "DigExclusion",
+		Size = Vector3.new(1, 1, 1),
+		Transparency = 1,
+		NoStuds = true,
+		CanCollide = false,
+		CastShadow = false,
+		CFrame = CFrame.new(x, 1.5, z),
+		Parent = laneFolder,
+	})
+	marker:SetAttribute("ClearRadius", radius)
+	marker:SetAttribute("Zone", zone)
+	CollectionService:AddTag(marker, DIG_EXCLUSION_TAG)
+end
+
+local function buildForestDigsiteTrees(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	-- offsets INSIDE the +/-DigHalf(40) mound core, spread so they don't clump at the centre
+	local spots = { { 21, 13 }, { -17, 23 }, { 24, -19 }, { -23, -15 } }
+	for _, s in ipairs(spots) do
+		local x = cx + s[1] + (decorRng:NextNumber() - 0.5) * 6
+		local z = centerZ + s[2] + (decorRng:NextNumber() - 0.5) * 6
+		placeTree(x, z, decorRng:NextInteger(11, 15) + decorRng:NextNumber(), laneFolder, false)
+		addDigExclusion(x, z, 13, zone) -- no-dig zone so mounds never spawn on the tree
+	end
+end
+
+-- a tiny clump of 2-3 thin grass blades, grouped under a Model named "grass" (a couple
+-- studs tall, vibrant green, non-collidable), standing on the surface at (x, z).
+local function buildGrassTuft(x: number, z: number, surfaceY: number)
+	local clump = Instance.new("Model")
+	clump.Name = "grass"
+	local primary: BasePart? = nil
+	for _ = 1, decorRng:NextInteger(2, 3) do
+		local h = 1.2 + decorRng:NextNumber() * 0.9 -- ~1.2-2.1 studs
+		local blade = makePart({
+			Name = "Blade",
+			NoStuds = true, -- too small to read studs
+			Size = Vector3.new(0.35, h, 0.35),
+			Color = jitterColor(Palette.TreeLeaf, 0.12),
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = CFrame.new(x + (decorRng:NextNumber() - 0.5) * 1.3, surfaceY + h / 2, z + (decorRng:NextNumber() - 0.5) * 1.3)
+				* CFrame.Angles(math.rad(decorRng:NextInteger(-12, 12)), math.rad(decorRng:NextInteger(0, 359)), math.rad(decorRng:NextInteger(-12, 12))),
+			Parent = clump,
+		})
+		primary = primary or blade
+	end
+	clump.PrimaryPart = primary
+	clump.Parent = laneFolder
+end
+
+-- a small flower: a thin green stem topped by a vibrant NEON bloom (a couple studs tall,
+-- non-collidable). Bloom colour drawn from the vibrant palette.
+local FLOWER_COLORS = { Palette.Pink, Palette.Gold, Palette.Cyan, Palette.Purple, Palette.LockRed }
+local function buildFlower(x: number, z: number, surfaceY: number)
+	local flower = Instance.new("Model")
+	flower.Name = "Flower"
+	local stemH = 1.0 + decorRng:NextNumber() * 0.8
+	local stem = makePart({
+		Name = "Stem",
+		NoStuds = true,
+		Size = Vector3.new(0.25, stemH, 0.25),
+		Color = jitterColor(Palette.TreeLeaf, 0.08),
+		CanCollide = false,
+		CastShadow = false,
+		CFrame = CFrame.new(x, surfaceY + stemH / 2, z),
+		Parent = flower,
+	})
+	flower.PrimaryPart = stem
+	makePart({
+		Name = "Bloom",
+		NoStuds = true,
+		Shape = Enum.PartType.Ball,
+		Size = Vector3.new(0.95, 0.95, 0.95),
+		Color = FLOWER_COLORS[decorRng:NextInteger(1, #FLOWER_COLORS)],
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CastShadow = false,
+		CFrame = CFrame.new(x, surfaceY + stemH + 0.25, z),
+		Parent = flower,
+	})
+	flower.Parent = laneFolder
+end
+
+-- Scatter tiny grass tufts + small flowers RANDOMLY across the whole Forest zone (the
+-- grassy clearing + the flanking strips), kept inside the lane walls. Surface-snapped via a
+-- downward ray against the ground / dig plates ONLY (so they never perch on a tree canopy).
+-- Forest-zone only (called from decorateLane for Theme == "Forest").
+local function scatterForestGroundCover(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local halfX = LANE_SIDE_INNER_X - 8 -- stay just inside the lane walls
+	local halfZ = LANE_STEP / 2 - 6     -- the zone's z half-extent (clear of the rebirth walls)
+
+	-- raycast only against flat surfaces (ground + dig slabs), never trees/rocks/decor
+	local surfaces: { Instance } = {}
+	local world = Workspace:FindFirstChild("World")
+	local ground = world and world:FindFirstChild("Ground")
+	if ground then
+		surfaces[#surfaces + 1] = ground
+	end
+	for _, p in ipairs(laneFolder:GetChildren()) do
+		if p:IsA("BasePart") and (p.Name == ("Zone%dDig"):format(zone) or p.Name == "ZoneBorder") then
+			surfaces[#surfaces + 1] = p
+		end
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = surfaces
+	local function surfaceYAt(x: number, z: number): number
+		local hit = Workspace:Raycast(Vector3.new(x, 40, z), Vector3.new(0, -60, 0), params)
+		return hit and hit.Position.Y or 1
+	end
+
+	for _ = 1, 90 do
+		local x = cx + (decorRng:NextNumber() - 0.5) * 2 * halfX
+		local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * halfZ
+		buildGrassTuft(x, z, surfaceYAt(x, z))
+	end
+	for _ = 1, 30 do
+		local x = cx + (decorRng:NextNumber() - 0.5) * 2 * halfX
+		local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * halfZ
+		buildFlower(x, z, surfaceYAt(x, z))
+	end
+end
+
+------------------------------------------------------------- desert ground cover (zone 3)
+-- a blocky studded CACTUS standing on the surface at (x,z): a tall trunk + 1-2 saguaro arms
+-- (out then up). Heights vary a LOT (some very tall). NON-collidable like the forest digsite
+-- trees so a cactus standing among the mounds never traps a digging player.
+local function buildCactus(x: number, z: number, surfaceY: number)
+	local cactus = Instance.new("Model")
+	cactus.Name = "Cactus"
+	local trunkW = 3 + decorRng:NextNumber() * 1.5
+	local height = decorRng:NextInteger(16, 34) + decorRng:NextNumber() -- varying; some TOO tall
+	local trunk = makePart({
+		Name = "Cactus",
+		Size = Vector3.new(trunkW, height, trunkW),
+		Color = jitterColor(Palette.Cactus, 0.05),
+		CanCollide = false,
+		CFrame = CFrame.new(x, surfaceY + height / 2, z),
+		Parent = cactus,
+	})
+	cactus.PrimaryPart = trunk
+	for _ = 1, decorRng:NextInteger(1, 2) do
+		local side = (decorRng:NextNumber() < 0.5) and 1 or -1
+		local alongX = decorRng:NextNumber() < 0.5
+		local attachH = surfaceY + height * (0.4 + decorRng:NextNumber() * 0.3)
+		local outLen = 3 + decorRng:NextNumber() * 4
+		local upLen = height * (0.22 + decorRng:NextNumber() * 0.28)
+		local aw = trunkW * 0.72
+		local hx = alongX and (x + side * (outLen / 2 + trunkW / 2 - 0.5)) or x
+		local hz = alongX and z or (z + side * (outLen / 2 + trunkW / 2 - 0.5))
+		makePart({ -- horizontal segment (out from the trunk)
+			Name = "CactusArm",
+			Size = alongX and Vector3.new(outLen, aw, aw) or Vector3.new(aw, aw, outLen),
+			Color = jitterColor(Palette.Cactus, 0.05),
+			CanCollide = false,
+			CFrame = CFrame.new(hx, attachH, hz),
+			Parent = cactus,
+		})
+		local vx = alongX and (x + side * (outLen + trunkW / 2 - 0.5)) or x
+		local vz = alongX and z or (z + side * (outLen + trunkW / 2 - 0.5))
+		makePart({ -- vertical segment (the arm bends up)
+			Name = "CactusArm",
+			Size = Vector3.new(aw, upLen, aw),
+			Color = jitterColor(Palette.Cactus, 0.05),
+			CanCollide = false,
+			CFrame = CFrame.new(vx, attachH + upLen / 2, vz),
+			Parent = cactus,
+		})
+	end
+	cactus.Parent = laneFolder
+end
+
+-- a single chunky #695B33 desert rock on the surface at (x,z). Returns its footprint size.
+local function buildDesertRock(x: number, z: number, surfaceY: number): number
+	local s = decorRng:NextInteger(7, 13)
+	makePart({
+		Name = "DesertRock",
+		Size = Vector3.new(s, s * 0.8, s * 0.9),
+		Color = jitterColor(Palette.DesertRock, 0.05),
+		CanCollide = false,
+		CFrame = CFrame.new(x, surfaceY + s * 0.4 - 0.4, z)
+			* CFrame.Angles(math.rad(decorRng:NextInteger(0, 28)), math.rad(decorRng:NextInteger(0, 360)), math.rad(decorRng:NextInteger(0, 28))),
+		Parent = laneFolder,
+	})
+	return s
+end
+
+-- DESERT theme decor: scatter several varying-height cacti + a few #695B33 rocks across the
+-- digsite, spread out (min-spacing). Each gets a no-dig marker so dirt mounds never overlap them.
+local function buildDesertDigsiteDecor(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local surfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2 -- top of the dig plate
+	local SPREAD = 46                            -- stay inside the dig square (~+/-60)
+	local placed: { { x: number, z: number } } = {}
+	-- pick a scattered (x,z) at least `gap` from already-placed decor; nil if it can't after tries
+	local function pick(gap: number): (number?, number?)
+		for _ = 1, 14 do
+			local x = cx + (decorRng:NextNumber() - 0.5) * 2 * SPREAD
+			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * SPREAD
+			local ok = true
+			for _, p in ipairs(placed) do
+				if (x - p.x) ^ 2 + (z - p.z) ^ 2 < gap * gap then
+					ok = false
+					break
+				end
+			end
+			if ok then
+				placed[#placed + 1] = { x = x, z = z }
+				return x, z
+			end
+		end
+		return nil, nil
+	end
+	for _ = 1, 6 do -- cacti (different heights, scattered)
+		local x, z = pick(16)
+		if x and z then
+			buildCactus(x, z, surfaceY)
+			addDigExclusion(x, z, 11, zone)
+		end
+	end
+	for _ = 1, 3 do -- 2-3 desert rocks
+		local x, z = pick(16)
+		if x and z then
+			local s = buildDesertRock(x, z, surfaceY)
+			addDigExclusion(x, z, math.max(10, s / 2 + 5), zone)
+		end
+	end
+end
+
+------------------------------------------------------------- glacier ground cover (zone 4)
+-- a jagged STUDDED ice spike (Minecraft-style spire): a stack of boxes tapering to a point, each
+-- level slightly offset so it reads as a rough crystal. Heights vary a LOT (some very tall).
+-- NON-collidable like the other digsite decor so it never traps a digging player. Returns base width.
+local function buildIceSpike(x: number, z: number, surfaceY: number): number
+	local spike = Instance.new("Model")
+	spike.Name = "IceSpike"
+	local height = decorRng:NextInteger(10, 40) + decorRng:NextNumber() -- varying; some very tall
+	local levels = math.clamp(math.floor(height / 5), 3, 9)
+	local baseW = 3.5 + decorRng:NextNumber() * 3.5
+	local y = surfaceY
+	for i = 0, levels - 1 do
+		local t = i / levels
+		local w = baseW * (1 - t * 0.82) -- taper toward a point
+		local segH = height / levels
+		makePart({
+			Name = "IceSpike",
+			Size = Vector3.new(w, segH * 1.03, w),
+			Color = jitterColor(Palette.IceSpike, 0.03),
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = CFrame.new(
+				x + (decorRng:NextNumber() - 0.5) * baseW * 0.28,
+				y + segH / 2,
+				z + (decorRng:NextNumber() - 0.5) * baseW * 0.28
+			) * CFrame.Angles(0, math.rad(decorRng:NextInteger(0, 18)), 0),
+			Parent = spike,
+		})
+		y = y + segH
+	end
+	spike.Parent = laneFolder
+	return baseW
+end
+
+-- one small, cute blocky PENGUIN standing on the surface at (x,z): dark body + white belly, orange
+-- beak/feet, little eyes + wings. Smooth (NoStuds — it's a creature), non-collidable. ~4.5 studs tall.
+local function buildPenguin(x: number, z: number, surfaceY: number)
+	local penguin = Instance.new("Model")
+	penguin.Name = "Penguin"
+	local BODY = Color3.fromRGB(42, 47, 64)    -- dark blue-black
+	local BELLY = Color3.fromRGB(245, 248, 255) -- white
+	local BEAK = Color3.fromRGB(255, 150, 40)  -- orange
+	local base = CFrame.new(x, surfaceY, z) * CFrame.Angles(0, math.rad(decorRng:NextInteger(0, 359)), 0)
+	local function part(name: string, size: Vector3, color: Color3, lx: number, ly: number, lz: number)
+		return makePart({
+			Name = "Penguin",
+			NoStuds = true,
+			CanCollide = false,
+			CastShadow = false,
+			Size = size,
+			Color = color,
+			CFrame = base * CFrame.new(lx, ly, lz),
+			Parent = penguin,
+		})
+	end
+	local body = part("body", Vector3.new(2.4, 2.8, 2.0), BODY, 0, 1.5, 0)
+	penguin.PrimaryPart = body
+	part("belly", Vector3.new(1.7, 2.1, 0.5), BELLY, 0, 1.4, 0.9)
+	part("head", Vector3.new(2.0, 1.7, 1.7), BODY, 0, 3.6, 0)
+	part("eyeL", Vector3.new(0.42, 0.42, 0.3), BELLY, -0.5, 3.9, 0.8)
+	part("eyeR", Vector3.new(0.42, 0.42, 0.3), BELLY, 0.5, 3.9, 0.8)
+	part("beak", Vector3.new(0.6, 0.5, 0.6), BEAK, 0, 3.45, 0.95)
+	part("wingL", Vector3.new(0.5, 2.1, 1.4), BODY, -1.35, 1.7, 0)
+	part("wingR", Vector3.new(0.5, 2.1, 1.4), BODY, 1.35, 1.7, 0)
+	part("footL", Vector3.new(0.8, 0.4, 1.1), BEAK, -0.55, 0.2, 0.6)
+	part("footR", Vector3.new(0.8, 0.4, 1.1), BEAK, 0.55, 0.2, 0.6)
+	penguin.Parent = laneFolder
+end
+
+-- GLACIERS theme decor: scatter ice spikes (varying heights) + ONE small penguin across the digsite,
+-- spread out (min-spacing). Each gets a no-dig marker so dirt mounds never overlap them.
+local function buildGlacierDigsiteDecor(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local surfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2 -- top of the dig plate
+	local SPREAD = 48
+	local placed: { { x: number, z: number } } = {}
+	local function pick(gap: number): (number?, number?)
+		for _ = 1, 14 do
+			local x = cx + (decorRng:NextNumber() - 0.5) * 2 * SPREAD
+			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * SPREAD
+			local ok = true
+			for _, p in ipairs(placed) do
+				if (x - p.x) ^ 2 + (z - p.z) ^ 2 < gap * gap then
+					ok = false
+					break
+				end
+			end
+			if ok then
+				placed[#placed + 1] = { x = x, z = z }
+				return x, z
+			end
+		end
+		return nil, nil
+	end
+	for _ = 1, 9 do -- ice spikes (different heights, scattered)
+		local x, z = pick(13)
+		if x and z then
+			local baseW = buildIceSpike(x, z, surfaceY)
+			addDigExclusion(x, z, math.max(8, baseW / 2 + 5), zone)
+		end
+	end
+	local px, pz = pick(13) -- one small penguin
+	if px and pz then
+		buildPenguin(px, pz, surfaceY)
+		addDigExclusion(px, pz, 6, zone)
+	end
+end
+
+------------------------------------------------------------- CRYSTAL CAVERNS (zone 5)
+-- Glowing crystal-cavern decor that pops against the dark #1B3444 floor (Theme == "Cavern").
+-- A picked-from-the-rainbow palette for the grass / mushrooms / wall crystals.
+local CAVERN_RAINBOW = {
+	Color3.fromRGB(255, 64, 64),  -- red
+	Color3.fromRGB(255, 150, 40), -- orange
+	Color3.fromRGB(255, 238, 70), -- yellow
+	Color3.fromRGB(70, 255, 120), -- green
+	Color3.fromRGB(55, 235, 255), -- cyan
+	Color3.fromRGB(90, 140, 255), -- blue
+	Color3.fromRGB(195, 95, 255), -- purple
+	Color3.fromRGB(255, 95, 215), -- magenta
+}
+local function cavernRainbow(): Color3
+	return CAVERN_RAINBOW[decorRng:NextInteger(1, #CAVERN_RAINBOW)]
+end
+
+-- a coloured PointLight so the decor casts a glow pool onto the dark floor (like the reference)
+local function addGlow(part: BasePart, color: Color3, brightness: number, range: number)
+	local light = Instance.new("PointLight")
+	light.Color = color
+	light.Brightness = brightness
+	light.Range = range
+	light.Shadows = false
+	light.Parent = part
+end
+
+-- ONE crystal shard: a tapered stack of NEON box segments growing from `root` ALONG `dir`
+-- (so it can erupt sideways from the ground or jut out of a wall). Optional glow at its tip.
+local function buildCrystalShard(parent: Instance, root: Vector3, dir: Vector3, color: Color3, length: number, withLight: boolean)
+	dir = dir.Unit
+	local segs = 4
+	local baseW = 2.6 + decorRng:NextNumber() * 1.1
+	local acc = 0
+	for i = 0, segs - 1 do
+		local t = i / segs
+		local w = baseW * (1 - t * 0.74) -- taper toward the point
+		local segL = length / segs
+		local center = root + dir * (acc + segL / 2)
+		makePart({
+			Name = "Crystal",
+			NoStuds = true, -- crystalline, not studded
+			Size = Vector3.new(w, w, segL * 1.05),
+			Color = jitterColor(color:Lerp(Color3.new(0, 0, 0), 0.12), 0.05), -- deepened so the facets read
+			Material = Enum.Material.Neon,
+			CanCollide = true, -- SOLID crystal — can't be walked or jumped through
+			CastShadow = false,
+			-- align the segment's length (local Z) with `dir`; random roll = faceted look
+			CFrame = CFrame.lookAt(center, center + dir) * CFrame.Angles(0, 0, math.rad(decorRng:NextInteger(0, 90))),
+			Parent = parent,
+		})
+		acc = acc + segL
+	end
+	if withLight then
+		local glow = makePart({
+			Name = "CrystalGlow",
+			Size = Vector3.new(0.4, 0.4, 0.4),
+			Transparency = 1,
+			NoStuds = true,
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = CFrame.new(root + dir * (length * 0.55)),
+			Parent = parent,
+		})
+		addGlow(glow, color, 1.0, 12) -- dimmer halo so the crystal's own shape reads
+	end
+end
+
+-- THE MAIN ATTRACTION: one grouped crystal — RED / BLUE / GREEN shards erupting from the SAME
+-- root at a sideways angle, splitting into three directions (120° apart). Each shard glows.
+local function buildCrystalCluster(x: number, z: number, surfaceY: number)
+	local model = Instance.new("Model")
+	model.Name = "CrystalCluster"
+	local root = Vector3.new(x, surfaceY + 0.2, z)
+	-- a dark rocky lump the crystals erupt from
+	local rock = makePart({
+		Name = "CrystalBase",
+		Shape = Enum.PartType.Ball,
+		NoStuds = true,
+		Size = Vector3.new(5.5, 3.6, 5.5),
+		Color = Palette.Stone,
+		Material = Enum.Material.Slate,
+		CanCollide = true, -- solid base of the crystal cluster
+		CastShadow = false,
+		CFrame = CFrame.new(x, surfaceY + 0.3, z),
+		Parent = model,
+	})
+	model.PrimaryPart = rock
+	local colors = {
+		Color3.fromRGB(255, 55, 55),  -- red
+		Color3.fromRGB(70, 130, 255), -- blue
+		Color3.fromRGB(70, 255, 110), -- green
+	}
+	local baseYaw = decorRng:NextNumber() * math.pi * 2
+	for i, col in ipairs(colors) do
+		local yaw = baseYaw + (i - 1) * (2 * math.pi / 3) + (decorRng:NextNumber() - 0.5) * 0.5
+		local tilt = math.rad(28 + decorRng:NextInteger(0, 16)) -- ~28-44° above horizontal (sideways)
+		local dir = Vector3.new(math.cos(yaw) * math.cos(tilt), math.sin(tilt), math.sin(yaw) * math.cos(tilt))
+		buildCrystalShard(model, root, dir, col, 12 + decorRng:NextNumber() * 4, true)
+	end
+	model.Parent = laneFolder
+end
+
+-- a BIG glowing mushroom — TALLER than a player, with a wide cap that overhangs the stem so a
+-- player can stand under it (like the reference). Soft-glow stem + a bright rainbow NEON cap
+-- dotted with pale glowing spots. A dimmer halo so the mushroom's own form reads.
+local function buildGlowMushroom(x: number, z: number, surfaceY: number)
+	local model = Instance.new("Model")
+	model.Name = "GlowMushroom"
+	local cap = cavernRainbow()
+	local totalH = 9 + decorRng:NextNumber() * 4 -- ~9-13 studs: clears a ~5-stud player + overhang
+	local stemH = totalH * 0.58
+	local stemW = 1.7 + decorRng:NextNumber() * 0.9
+	local stem = makePart({
+		Name = "Stem",
+		NoStuds = true,
+		Size = Vector3.new(stemW, stemH, stemW),
+		Color = Color3.fromRGB(170, 182, 215), -- soft pale glow (dimmer than the cap)
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CastShadow = false,
+		CFrame = CFrame.new(x, surfaceY + stemH / 2, z),
+		Parent = model,
+	})
+	model.PrimaryPart = stem
+	local capW = stemW * 3.4 + decorRng:NextNumber() * 2 -- WIDE cap that overhangs the stem
+	local capH = capW * 0.5
+	local capY = surfaceY + stemH + capH * 0.18
+	local capPart = makePart({
+		Name = "Cap",
+		NoStuds = true,
+		Shape = Enum.PartType.Ball,
+		Size = Vector3.new(capW, capH, capW), -- flattened ball = rounded dome
+		Color = cap:Lerp(Color3.new(0, 0, 0), 0.2), -- deepened so the dome + pale spots read (not a blinding blob)
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CastShadow = false,
+		CFrame = CFrame.new(x, capY, z),
+		Parent = model,
+	})
+	-- pale glowing spots dotted over the dome (reference look), snapped to the cap surface
+	for _ = 1, decorRng:NextInteger(5, 8) do
+		local ang = decorRng:NextNumber() * math.pi * 2
+		local rad = (0.12 + decorRng:NextNumber() * 0.32) * (capW / 2)
+		local rNorm = rad / (capW / 2)
+		local sy = capY + (capH / 2) * math.sqrt(math.max(0, 1 - rNorm * rNorm)) * 0.9
+		local spotW = 0.5 + decorRng:NextNumber() * 0.7
+		makePart({
+			Name = "CapSpot",
+			NoStuds = true,
+			Shape = Enum.PartType.Ball,
+			Size = Vector3.new(spotW, spotW * 0.5, spotW),
+			Color = Color3.fromRGB(245, 250, 255),
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = CFrame.new(x + math.cos(ang) * rad, sy, z + math.sin(ang) * rad),
+			Parent = model,
+		})
+	end
+	addGlow(capPart, cap, 0.9, 12) -- dimmer halo so the mushroom's shape reads
+	model.Parent = laneFolder
+end
+
+-- a tuft of LONG, DROOPY glowing reed blades (a single random rainbow colour per tuft). Each
+-- blade is two segments that bend over so it arcs/droops instead of standing straight up.
+local function buildGlowGrass(x: number, z: number, surfaceY: number)
+	local clump = Instance.new("Model")
+	clump.Name = "GlowGrass"
+	local col = cavernRainbow():Lerp(Color3.new(0, 0, 0), 0.12) -- toned down a touch (less blinding)
+	local primary: BasePart? = nil
+	-- one leaning neon segment from `base` toward `yaw`, `tilt` off vertical; returns its top point
+	local function seg(base: Vector3, yaw: number, tilt: number, len: number, w: number): Vector3
+		local rot = CFrame.Angles(0, yaw, 0) * CFrame.Angles(tilt, 0, 0)
+		local up = rot.UpVector
+		local center = base + up * (len / 2)
+		local blade = makePart({
+			Name = "Blade",
+			NoStuds = true,
+			Size = Vector3.new(w, len * 1.04, w),
+			Color = jitterColor(col, 0.06),
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = CFrame.new(center) * rot,
+			Parent = clump,
+		})
+		primary = primary or blade
+		return base + up * len
+	end
+	for _ = 1, decorRng:NextInteger(3, 5) do
+		local yaw = decorRng:NextNumber() * math.pi * 2
+		local base = Vector3.new(x + (decorRng:NextNumber() - 0.5) * 1.9, surfaceY, z + (decorRng:NextNumber() - 0.5) * 1.9)
+		-- lower segment leans a little; upper segment droops MORE so the blade arcs over
+		local tilt1 = math.rad(14 + decorRng:NextInteger(0, 14))
+		local top = seg(base, yaw, tilt1, 2.6 + decorRng:NextNumber() * 1.7, 0.3)
+		local tilt2 = tilt1 + math.rad(38 + decorRng:NextInteger(0, 30))
+		seg(top, yaw, tilt2, 2.2 + decorRng:NextNumber() * 1.8, 0.24)
+	end
+	clump.PrimaryPart = primary
+	clump.Parent = laneFolder
+end
+
+-- crystals jutting out of the two border cliffs INTO the zone (random rainbow), at varied
+-- heights along each wall, angled inward + slightly down. Stay well clear of the dig core.
+local function buildWallCrystals(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local wallTopY = 1 + LANE_SIDE_BODY_H -- top of the dirt cliff body
+	local halfZ = LANE_STEP / 2 - 16
+	for _, sign in ipairs({ -1, 1 }) do
+		for _ = 1, decorRng:NextInteger(3, 5) do
+			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * halfZ
+			local y = 7 + decorRng:NextNumber() * math.max(6, wallTopY - 16) -- up the wall face
+			local root = Vector3.new(cx + sign * (LANE_SIDE_INNER_X - 1), y, z) -- embed 1 stud into the cliff
+			local dir = Vector3.new(
+				-sign * (0.8 + decorRng:NextNumber() * 0.2), -- inward (toward centre)
+				-0.1 - decorRng:NextNumber() * 0.3, -- slightly down
+				(decorRng:NextNumber() - 0.5) * 0.6 -- some z spread
+			)
+			local model = Instance.new("Model")
+			model.Name = "WallCrystal"
+			buildCrystalShard(model, root, dir, cavernRainbow(), 7 + decorRng:NextNumber() * 4.5, decorRng:NextNumber() < 0.4)
+			model.Parent = laneFolder
+		end
+	end
+end
+
+-- CRYSTAL CAVERNS decor: the one main crystal cluster + tall glowing mushrooms + glowing grass
+-- scattered around the RIM (kept OUT of the central dig-mound core), plus crystals on the walls.
+local function buildCavernDecor(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local halfX = LANE_SIDE_INNER_X - 12 -- stay clear of the cliffs
+	local halfZ = LANE_STEP / 2 - 12     -- stay clear of the rebirth walls
+	local CORE = 48 -- keep all floor decor OUTSIDE the central dig-mound core (DigHalf 40 + margin)
+
+	-- surface-snap raycast against the floor ONLY (ground + this zone's dig plate / border)
+	local surfaces: { Instance } = {}
+	local world = Workspace:FindFirstChild("World")
+	local ground = world and world:FindFirstChild("Ground")
+	if ground then
+		surfaces[#surfaces + 1] = ground
+	end
+	for _, p in ipairs(laneFolder:GetChildren()) do
+		if p:IsA("BasePart") and (p.Name == ("Zone%dDig"):format(zone) or p.Name == "ZoneBorder") then
+			surfaces[#surfaces + 1] = p
+		end
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = surfaces
+	local function surfaceYAt(x: number, z: number): number
+		local hit = Workspace:Raycast(Vector3.new(x, 40, z), Vector3.new(0, -60, 0), params)
+		return hit and hit.Position.Y or (LANE_SEG_Y + SEG_SIZE.Y / 2)
+	end
+
+	-- min-spacing picker that only returns positions OUTSIDE the dig core
+	local placed: { { x: number, z: number } } = {}
+	local function pickRim(gap: number): (number?, number?)
+		for _ = 1, 20 do
+			local x = cx + (decorRng:NextNumber() - 0.5) * 2 * halfX
+			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * halfZ
+			if math.abs(x - cx) > CORE or math.abs(z - centerZ) > CORE then
+				local ok = true
+				for _, p in ipairs(placed) do
+					if (x - p.x) ^ 2 + (z - p.z) ^ 2 < gap * gap then
+						ok = false
+						break
+					end
+				end
+				if ok then
+					placed[#placed + 1] = { x = x, z = z }
+					return x, z
+				end
+			end
+		end
+		return nil, nil
+	end
+
+	-- 1) THE main crystal (red/blue/green), off to one side of the rim
+	local mx = cx + (decorRng:NextNumber() < 0.5 and -1 or 1) * (54 + decorRng:NextNumber() * 12)
+	local mz = centerZ + (decorRng:NextNumber() - 0.5) * 2 * (halfZ - 26)
+	buildCrystalCluster(mx, mz, surfaceYAt(mx, mz))
+	placed[#placed + 1] = { x = mx, z = mz }
+	addDigExclusion(mx, mz, 16, zone)
+
+	-- 2) tall glowing mushrooms (~player height) around the rim
+	for _ = 1, 6 do
+		local x, z = pickRim(15)
+		if x and z then
+			buildGlowMushroom(x, z, surfaceYAt(x, z))
+			addDigExclusion(x, z, 5, zone)
+		end
+	end
+
+	-- 3) glowing grass / plants (random rainbow) scattered around the rim
+	for _ = 1, 46 do
+		local x, z = pickRim(5)
+		if x and z then
+			buildGlowGrass(x, z, surfaceYAt(x, z))
+		end
+	end
+
+	-- 4) crystals jutting from the border walls into the zone
+	buildWallCrystals(zone, centerZ)
+end
+
+-- frame every rebirth wall with rock piles + add per-zone theme decor (trees / cacti / ice).
 local function decorateLane()
 	for k = 1, ZoneConfig.MaxZone - 1 do
-		buildWallFrame(LANE_START + (k - 1) * LANE_STEP + LANE_STEP / 2)
+		local wz = LANE_START + (k - 1) * LANE_STEP + LANE_STEP / 2
+		if k == 1 then
+			buildWallFrame(wz) -- zone1/2: stones frame the narrow wall ends, near the dig site
+		else
+			-- wide fence-less walls: push the (original-size) stone piles OUT so they cover the wall
+			-- right up to / slightly INTO the border cliff — no light-gray wall sliver shows between
+			-- the stone and the border. Outer edge lands ~x102-108 (into the dirt body 100-120, still
+			-- well short of the grass beyond at 122). pile half-extent ~15, so center ≈ border inner - 7.
+			buildWallFrame(wz, LANE_SIDE_INNER_X - 7)
+		end
 	end
 	for z = 1, ZoneConfig.MaxZone do
 		local data = ZoneConfig.get(z)
 		if data and data.Theme == "Forest" then
 			local pz = LANE_START + (z - 1) * LANE_STEP
-			-- bigger FRONT margin (+30) so trees sit well clear of the zone-boundary fence
+			-- trees FLANKING the clearing (in the side strips, clear of the boundary fence)
 			buildForestTrees(pz - LANE_STEP / 2 + 30, pz + LANE_STEP / 2 - 14)
+			-- + a few trees sprinkled INSIDE the clearing's grassy rim (off the dig spots)
+			buildForestClearingTrees(pz)
+			-- + a few trees standing INSIDE the digsite itself, each ringed by an invisible
+			--   no-dig zone so mounds never spawn on them
+			buildForestDigsiteTrees(z, pz)
+			-- + tiny grass tufts & small flowers scattered across the whole forest zone
+			scatterForestGroundCover(z, pz)
+		elseif data and data.Theme == "Desert" then
+			-- cacti (varying heights) + a few #695B33 rocks scattered across the digsite, each
+			-- ringed by a no-dig zone so dirt mounds never overlap them
+			buildDesertDigsiteDecor(z, LANE_START + (z - 1) * LANE_STEP)
+		elseif data and data.Theme == "Glaciers" then
+			-- ice spikes (varying heights) + one small penguin scattered across the digsite, each
+			-- ringed by a no-dig zone so dirt mounds never overlap them
+			buildGlacierDigsiteDecor(z, LANE_START + (z - 1) * LANE_STEP)
+		elseif data and data.Theme == "Cavern" then
+			-- CRYSTAL CAVERNS: the main red/blue/green crystal + glowing mushrooms / grass around
+			-- the rim + crystals jutting from the walls (all clear of the central dig-mound core)
+			buildCavernDecor(z, LANE_START + (z - 1) * LANE_STEP)
 		end
 	end
+end
+
+-- TEMP dev ladder: a bright climbable truss up the OUTER face of the +X border cliff near the
+-- lobby (~z106), so you can climb up and view your build from above. Remove when no longer needed.
+local function buildDevViewLadder()
+	local cx = MapBuilder.DigCenter.X
+	local wallOuterX = LANE_SIDE_INNER_X + LANE_SIDE_THICK -- +X cliff outer body face (~120)
+	local topY = 1 + LANE_SIDE_BODY_H + LANE_SIDE_CAP_H    -- top of the grass cap (~48)
+	local truss = Instance.new("TrussPart")
+	truss.Name = "DevViewLadder"
+	truss.Anchored = true
+	truss.CanCollide = true
+	truss.Size = Vector3.new(2, topY, 2) -- ground (y=1) up to just above the cap top
+	truss.Color = Palette.Gold
+	truss.Material = Enum.Material.Metal
+	truss.CFrame = CFrame.new(cx + wallOuterX + 1, 1 + topY / 2, LANE_START + 106)
+	truss.Parent = laneFolder
 end
 
 local function buildSharedLane()
@@ -1407,7 +2889,12 @@ local function buildSharedLane()
 	-- dig sites march OUTWARD (+Z) starting near the half-circle center (LANE_START):
 	for z = 1, ZoneConfig.MaxZone do
 		local pz = LANE_START + (z - 1) * LANE_STEP
-		buildZoneArea(z, Vector3.new(x, 0, pz), Vector3.new(0, 0, 1), laneFolder)   -- dir +Z (lane runs outward)
+		if z == 1 then
+			-- the LOBBY dig site: bigger + pushed toward the lobby (away from the +Z wall)
+			buildZoneArea(1, Vector3.new(x, 0, pz + ZONE1_DIG_SHIFT_Z), Vector3.new(0, 0, 1), laneFolder, ZONE1_DIG_SIZE, ZONE1_DIG_HALF)
+		else
+			buildZoneArea(z, Vector3.new(x, 0, pz), Vector3.new(0, 0, 1), laneFolder)   -- dir +Z (lane runs outward)
+		end
 	end
 	-- walls exactly midway between consecutive dig sites; Front (-Z) faces the bases:
 	for k = 1, ZoneConfig.MaxZone - 1 do
@@ -1418,11 +2905,114 @@ local function buildSharedLane()
 	-- close the zone1/2 lane sides so the central wall can't simply be walked around
 	buildLaneFences()
 
+	-- decorative fence around the lobby dig site (3 sides; open toward the zone wall)
+	buildZone1DigFence()
+
 	-- grass-topped dirt cliffs flanking the whole lane to tighten the playable width
 	buildLaneSideWalls()
 
+	-- the big dirt-cliff wall enclosing the whole starting lobby (opens toward the +Z lane)
+	buildLobbyWall()
+
+	-- TEMP: a climbable ladder up the border cliff near the lobby (view the build from above)
+	buildDevViewLadder()
+
 	-- frame the walls with studded rock + add per-zone theme decorations (trees)
 	decorateLane()
+end
+
+----------------------------------------------------------------- in-case hatching egg
+-- Show / hide the in-progress hatching EGG inside each of a slot's REAL incubators. The egg
+-- is the game's signature PIXEL egg (shared PixelEgg builder, same as the dug eggs), tinted
+-- by the incubating egg's rarity (RarityColors.tier) but ALWAYS built at the incubator's
+-- FIXED fit-height — so every rarity shows up the same SIZE inside the glass, only the COLOUR
+-- differs. Rebuilds only when the shown rarity actually changes, so the 0.5s gate-updater
+-- tick (and the explicit place/collect calls) are cheap.
+local function updateSlotEggs(slot: number)
+	local incs = slotIncubators[slot]
+	if not incs then
+		return
+	end
+	local occupant = slotOccupant[slot]
+	local profile = occupant and PlayerData.get(occupant) or nil
+	local unlocked = (profile and profile.IncubatorsUnlocked) or 0
+	for i, rec in ipairs(incs) do
+		local desired: string? = nil
+		if profile and i <= unlocked then
+			local inc = profile.Incubators and profile.Incubators[i]
+			if inc then
+				desired = inc.rarity
+			end
+		end
+		if rec.eggRarity ~= desired then
+			if rec.eggModel then
+				rec.eggModel:Destroy()
+				rec.eggModel = nil
+			end
+			rec.eggRarity = desired
+			if desired then
+				local egg = PixelEgg.build(rec.eggCF.Position, rec.eggHeight, RarityColors.tier(desired), INCUBATOR_EGG_VOX)
+				egg.Name = "HatchingEgg"
+				egg.Parent = rec.model
+				rec.eggModel = egg
+			end
+		end
+	end
+end
+
+-- Drive each REAL incubator's on-model progress bar + countdown from the occupant's profile.
+-- (Replaces the old bottom-right HUD panel.) Empty → blank; hatching → cyan bar fills + "m:ss";
+-- ready → green full bar + "DONE", the floating label switches to a collect hint, and the
+-- ClickDetector turns ON so clicking the incubator collects the hatched brainrot.
+local function updateIncubatorProgress(slot: number)
+	local incs = slotIncubators[slot]
+	if not incs then
+		return
+	end
+	local occupant = slotOccupant[slot]
+	local profile = occupant and PlayerData.get(occupant) or nil
+	local unlocked = (profile and profile.IncubatorsUnlocked) or 0
+	local now = Workspace:GetServerTimeNow()
+	for i, rec in ipairs(incs) do
+		if rec.mode == "real" and rec.progFill and rec.progText then
+			local default = ("🥚 INCUBATOR %d"):format(i)
+			local inc = (profile and i <= unlocked and profile.Incubators) and profile.Incubators[i] or nil
+			if not inc then
+				rec.progFill.Size = UDim2.new(0, 0, 1, 0)
+				if rec.progText.Text ~= "" then rec.progText.Text = "" end
+				rec.ready = false
+				if rec.click.MaxActivationDistance ~= 0 then rec.click.MaxActivationDistance = 0 end
+				if rec.label.Text ~= default then
+					rec.label.Text = default
+					rec.label.TextColor3 = Color3.fromRGB(150, 230, 255)
+				end
+			else
+				local remaining = inc.endTime - now
+				local dur = math.max(inc.duration or 1, 0.01)
+				rec.progFill.Size = UDim2.new(1 - math.clamp(remaining / dur, 0, 1), 0, 1, 0)
+				if remaining <= 0 then
+					rec.progFill.BackgroundColor3 = INC_BAR_READY
+					if rec.progText.Text ~= "DONE" then rec.progText.Text = "DONE" end
+					rec.ready = true
+					if rec.click.MaxActivationDistance ~= 28 then rec.click.MaxActivationDistance = 28 end
+					if rec.label.Text ~= "✅ Click to collect!" then
+						rec.label.Text = "✅ Click to collect!"
+						rec.label.TextColor3 = Color3.fromRGB(150, 255, 150)
+					end
+				else
+					rec.progFill.BackgroundColor3 = INC_BAR_PROGRESS
+					local t = Format.time(remaining)
+					if rec.progText.Text ~= t then rec.progText.Text = t end
+					rec.ready = false
+					if rec.click.MaxActivationDistance ~= 0 then rec.click.MaxActivationDistance = 0 end
+					if rec.label.Text ~= default then
+						rec.label.Text = default
+						rec.label.TextColor3 = Color3.fromRGB(150, 230, 255)
+					end
+				end
+			end
+		end
+	end
 end
 
 ----------------------------------------------------------------- base progression
@@ -1480,15 +3070,26 @@ refreshBaseProgression = function(slot: number)
 		end
 	end
 
-	-- floor 2 visibility (reparent in/out of Workspace)
+	-- floor 2 WALLS/roof visibility (reparent in/out of Workspace). The floor-2 FLOOR slab
+	-- is NOT in here — it's always present as floor 1's roof; only the walls are gated.
 	local f2 = slotFloor2[slot]
+	local floor2Shown = occupant ~= nil and ladderUnlocked
 	if f2 then
-		local show = occupant ~= nil and ladderUnlocked
-		local target = show and slotFolder[slot] or hiddenHolder
+		local target = floor2Shown and slotFolder[slot] or hiddenHolder
 		if f2.Parent ~= target then
 			f2.Parent = target
 		end
 	end
+	-- keep floor 1 fully ROOFED until floor 2 opens: the hatch fills the ladder hole while
+	-- locked, then opens (transparent + walk-through) so the player can climb up.
+	local hatch = slotCeilingHatch[slot]
+	if hatch then
+		hatch.Transparency = floor2Shown and 1 or 0
+		hatch.CanCollide = not floor2Shown
+	end
+
+	-- show/hide the hatching egg inside each real incubator
+	updateSlotEggs(slot)
 end
 
 -- public: force a refresh for a player's slot (called after incubator/ladder purchases)
@@ -1496,6 +3097,15 @@ function BaseManager.refreshBaseProgression(player: Player)
 	local slot = playerSlot[player]
 	if slot then
 		refreshBaseProgression(slot)
+	end
+end
+
+-- public: refresh just the in-case hatching eggs for a player (called by IncubationManager
+-- the moment an egg is placed or collected, so the display updates instantly).
+function BaseManager.refreshIncubatorEggs(player: Player)
+	local slot = playerSlot[player]
+	if slot then
+		updateSlotEggs(slot)
 	end
 end
 
@@ -1513,6 +3123,7 @@ local function buildBaseStructure(slot: number)
 	slotModels[slot] = {}
 	slotPodiums[slot] = {}
 	slotPlates[slot] = {}
+	slotLevelButtons[slot] = {}
 
 	buildBuilding(slot, origin, folder) -- populates slotIncubators / slotLadder / slotFloor2
 	rebuildSlotPodiums(slot, GameConfig.StartingPlots)
@@ -1595,10 +3206,10 @@ function BaseManager.freeBase(player: Player)
 		slotGhostPlot[slot] = nil
 	end
 
-	-- reset the name sign back to the neutral OPEN PLOT state
+	-- reset the name plate back to the neutral OPEN PLOT state
 	local sign = slotSign[slot]
 	if sign then
-		sign.Text = ("🟢 OPEN PLOT %d"):format(slot)
+		sign.Text = ("OPEN PLOT %d"):format(slot)
 		sign.TextColor3 = Color3.fromRGB(120, 220, 255)
 	end
 
@@ -1614,6 +3225,19 @@ end
 -- "Lv N" billboard in sync across ALL occupied slots (rebirth gating is now handled
 -- by the shared lane, no per-slot walls)
 function BaseManager.startGateUpdater()
+	-- fast, lightweight loop ONLY for the on-incubator progress bars + countdowns (smoother than
+	-- the 0.5s gate loop below). Each tick reads the occupant's in-progress hatches.
+	task.spawn(function()
+		while true do
+			for slot = 1, MAX_SLOTS do
+				if slotOccupant[slot] then
+					pcall(updateIncubatorProgress, slot)
+				end
+			end
+			task.wait(0.12)
+		end
+	end)
+
 	task.spawn(function()
 		while true do
 			for slot = 1, MAX_SLOTS do
@@ -1645,12 +3269,54 @@ function BaseManager.startGateUpdater()
 				if occupant and models then
 					local profile = PlayerData.get(occupant)
 					if profile then
-						local levelById: { [string]: number } = {}
+						local entryById: { [string]: any } = {}
 						for _, entry in ipairs(profile.Collection) do
-							levelById[entry.id] = entry.level or 1
+							entryById[entry.id] = entry
 						end
 						for id, model in pairs(models) do
-							setBrainrotLevelLabel(model, levelById[id] or 1)
+							local entry = entryById[id]
+							setBrainrotLevelLabel(model, (entry and entry.level) or 1)
+							if entry then
+								-- keep the billboard $/s current (level ups + rebirth multiplier changes)
+								setBrainrotInfoIncome(model, entry, profile.Rebirths)
+							end
+						end
+					end
+				end
+
+				-- update each podium's LEVEL UP button: next-level cost + RED (can afford) /
+				-- GRAY (can't); hidden when no brainrot sits there; "MAX LEVEL" at the cap.
+				local lbtns = slotLevelButtons[slot]
+				if lbtns then
+					local lprofile = occupant and PlayerData.get(occupant)
+					for idx, b in pairs(lbtns) do
+						local id = (occupant and lprofile) and brainrotIdAtPodium(slot, idx) or nil
+						local entry
+						if id then
+							for _, e in ipairs(lprofile.Collection) do
+								if e.id == id then entry = e break end
+							end
+						end
+						if entry then
+							local level = entry.level or 1
+							if level >= BrainrotConfig.MaxLevel then
+								b.label.Text = "MAX LEVEL"
+								b.part.Color = Color3.fromRGB(70, 80, 95)
+								b.part.Transparency = 0
+								b.click.MaxActivationDistance = 0
+							else
+								local baseCost = BrainrotConfig.levelUpCost(level + 1)
+								local cost = math.floor(baseCost * UpgradeConfig.levelCostMultiplier(lprofile.Rebirths))
+								local afford = (lprofile.Cash or 0) >= cost
+								b.label.Text = ("⬆ LEVEL UP\n$%s"):format(Format.short(cost))
+								b.part.Color = afford and Color3.fromRGB(225, 55, 55) or Color3.fromRGB(108, 108, 118)
+								b.part.Transparency = 0
+								b.click.MaxActivationDistance = 32
+							end
+						else
+							b.label.Text = ""
+							b.part.Transparency = 1
+							b.click.MaxActivationDistance = 0
 						end
 					end
 				end
@@ -1710,10 +3376,44 @@ function BaseManager.teleportHome(player: Player): any
 	return { ok = true }
 end
 
+-- Teleport the player to the MIDDLE of a dig zone (1..MaxZone), but ONLY if they've
+-- unlocked it (zone <= CurrentZone, their highest CASH-unlocked zone) — otherwise this
+-- would bypass the zone walls. Mirrors teleportHome's PivotTo approach.
+function BaseManager.teleportZone(player: Player, zone: number): any
+	if type(zone) ~= "number" then
+		return { ok = false, reason = "Invalid zone." }
+	end
+	zone = math.floor(zone)
+	if zone < 1 or zone > ZoneConfig.MaxZone then
+		return { ok = false, reason = "Invalid zone." }
+	end
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not char or not hrp then
+		return { ok = false, reason = "No character to teleport." }
+	end
+	local profile = PlayerData.get(player)
+	local highest = profile and profile.CurrentZone or 1
+	if zone > highest then
+		return { ok = false, reason = "Requirement not met!" }
+	end
+	-- zone z's dig site sits at z = LANE_START + (z-1)*LANE_STEP on the lane axis (DigCenter.X);
+	-- drop the player a few studs above the dig slab's top surface.
+	local x = MapBuilder.DigCenter.X
+	local surfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2
+	local pz = LANE_START + (zone - 1) * LANE_STEP
+	char:PivotTo(CFrame.new(x, surfaceY + 5, pz))
+	return { ok = true }
+end
+
 function BaseManager.init()
 	-- the Home button (client) asks the server to put it back at its base
 	Net.getFunction("TeleportHome").OnServerInvoke = function(player)
 		return BaseManager.teleportHome(player)
+	end
+	-- the Teleport menu (client) asks the server to drop it in the middle of an unlocked zone
+	Net.getFunction("TeleportZone").OnServerInvoke = function(player, zone)
+		return BaseManager.teleportZone(player, zone)
 	end
 
 	basesFolder = Workspace:FindFirstChild(BASES_FOLDER_NAME) :: Folder

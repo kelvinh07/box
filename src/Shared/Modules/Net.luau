@@ -39,6 +39,7 @@ Net.Functions = {
 	"Rebirth",            -- perform a rebirth
 	"SellBrainrot",       -- sell an owned brainrot for cash
 	"TeleportHome",       -- teleport the player back to their own base
+	"TeleportZone",       -- teleport the player to the middle of an UNLOCKED dig zone
 }
 
 local FOLDER_NAME = "Remotes"

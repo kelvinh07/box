@@ -20,6 +20,25 @@ UIUtil.Colors = {
 	Outline    = Color3.fromRGB(15, 16, 26),
 }
 
+-- Mutually-exclusive popup group: opening one popup closes the others so the screen never
+-- fills with stacked panels. Each popup registers a `close` fn; opening it first calls
+-- closeOtherPanels(self). Used by UIUtil.modal AND the custom Backpack panel.
+UIUtil._panels = {}
+
+function UIUtil.registerPanel(close: () -> ()): any
+	local entry = { close = close }
+	table.insert(UIUtil._panels, entry)
+	return entry
+end
+
+function UIUtil.closeOtherPanels(except: any?)
+	for _, entry in ipairs(UIUtil._panels) do
+		if entry ~= except then
+			entry.close()
+		end
+	end
+end
+
 function UIUtil.corner(parent: Instance, radius: number?): UICorner
 	local c = Instance.new("UICorner")
 	c.CornerRadius = UDim.new(0, radius or 12)
@@ -176,7 +195,11 @@ function UIUtil.modal(gui: Instance, title: string, size: UDim2?): any
 	local api = {}
 	api.root = root
 	api.content = content
+	local panelEntry: any
 	function api.setVisible(v: boolean)
+		if v then
+			UIUtil.closeOtherPanels(panelEntry) -- one popup at a time
+		end
 		root.Visible = v
 		if v then
 			UIUtil.pop(root)
@@ -185,6 +208,9 @@ function UIUtil.modal(gui: Instance, title: string, size: UDim2?): any
 	function api.toggle()
 		api.setVisible(not root.Visible)
 	end
+	panelEntry = UIUtil.registerPanel(function()
+		root.Visible = false
+	end)
 	close.MouseButton1Click:Connect(function()
 		api.setVisible(false)
 	end)

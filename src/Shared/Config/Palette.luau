@@ -15,7 +15,8 @@ local Palette = {
 	BaseTrim  = Color3.fromRGB(96, 102, 120),   -- dark cool gray (pillars/trim/roof/headers/rails/steps)
 	BaseFloor = Color3.fromRGB(120, 126, 144),  -- medium gray (platform/floor slabs)
 	Glass     = Color3.fromRGB(150, 235, 255),  -- bright cyan glass (windows/incubator dome)
-	Wall      = Color3.fromRGB(226, 176, 130),  -- lighter warm brown (rebirth/zone walls; was saturated coral)
+	Wall      = Color3.fromRGB(226, 176, 130),  -- lighter warm brown (ghost/locked podiums + incubators)
+	ZoneWall  = Color3.fromRGB(195, 200, 208),  -- LIGHT GRAY rebirth/zone divider walls
 	Plate     = Color3.fromRGB(50, 250, 110),   -- vivid green (pressure plates)
 	Podium    = Color3.fromRGB(135, 80, 230),   -- saturated purple (podiums; keep Neon material)
 	PodiumRim = Color3.fromRGB(110, 235, 255),  -- bright cyan rim
@@ -23,6 +24,15 @@ local Palette = {
 	Stone     = Color3.fromRGB(124, 130, 146),  -- studded rock piles framing the zone walls
 	TreeTrunk = Color3.fromRGB(120, 74, 44),    -- procedural-tree trunk (fallback foliage)
 	TreeLeaf  = Color3.fromRGB(74, 196, 86),    -- procedural-tree foliage (vivid forest green)
+	-- DESERT (zone 3) — sand checker floor + cactus/rock decor
+	Sand         = Color3.fromRGB(227, 220, 197), -- #E3DCC5 solid desert floor (zone 3)
+	-- GLACIERS (zone 4) — solid ice floor + ice-spike decor
+	Ice          = Color3.fromRGB(214, 255, 250), -- #D6FFFA solid glacier floor (zone 4)
+	IceSpike     = Color3.fromRGB(222, 246, 250), -- #DEF6FA ice spikes
+	Cactus       = Color3.fromRGB(96, 168, 74),   -- desert cactus green
+	DesertRock   = Color3.fromRGB(105, 91, 51),   -- #695B33 scattered desert rocks
+	-- CRYSTAL CAVERNS (zone 5) — dark blue-teal cave floor; glowing crystal/mushroom/grass decor pops against it
+	CavernFloor  = Color3.fromRGB(27, 52, 68),    -- #1B3444 dark cavern floor
 	Incubator = Color3.fromRGB(72, 116, 245),   -- vivid blue incubator body
 	LockRed   = Color3.fromRGB(255, 58, 86),    -- vivid red (locked staircase barrier)
 	Pink      = Color3.fromRGB(255, 80, 175),

@@ -8,12 +8,13 @@
 -- Total luck = sum of unlocked Luck tier Values ONLY. Rebirth grants NO luck.
 --
 -- Incubator (formerly "HatchSpeed"): 9 named tiers. Each level increases the
--- incubation-time reduction toward ~0.95. Currency: tiers 1-5 Cash, 6-9 Gems.
+-- incubation-time reduction toward ~0.95. Currency: ALL tiers cost GEMS now; tiers 1-3
+-- are open, 4-6 need 5 rebirths, 7-9 need 10 rebirths (incubatorTierUnlockRebirths).
 -- The 0.5s hatch floor lives in IncubationManager (so hatching is never instant).
 --
--- Rebirth: permanent, compounding income multipliers (cash 1.2^rb, gems 1.5^rb)
--- and the level-cost multiplier (1.5^rb). The cash milestone is driven by
--- LifetimeCash; the gem cost is charged from Gems. See cashMilestone/gemCost.
+-- Rebirth: a permanent, compounding CASH multiplier (1.35^rb). There is NO gem multiplier.
+-- Rebirth is gated purely by LIFETIME cash (cashMilestone) and no longer costs gems.
+-- The level-cost multiplier (1.5^rb) still scales cash level-up costs.
 
 local UpgradeConfig = {}
 
@@ -22,15 +23,15 @@ local UpgradeConfig = {}
 UpgradeConfig.Luck = {
 	MaxLevel = 9,
 	Levels = {
-		[1] = { GemCost = 50,    Value = 0.15 },
-		[2] = { GemCost = 150,   Value = 0.35 },
-		[3] = { GemCost = 400,   Value = 0.60 },
-		[4] = { GemCost = 1000,  Value = 0.90 },
-		[5] = { GemCost = 2500,  Value = 1.30 },
-		[6] = { GemCost = 6000,  Value = 1.80 },
-		[7] = { GemCost = 12000, Value = 2.40 },
-		[8] = { GemCost = 25000, Value = 3.10 },
-		[9] = { GemCost = 50000, Value = 4.00 },
+		[1] = { GemCost = 80,    Value = 0.15 },
+		[2] = { GemCost = 250,   Value = 0.35 },
+		[3] = { GemCost = 650,   Value = 0.60 },
+		[4] = { GemCost = 1500,  Value = 0.90 },
+		[5] = { GemCost = 3500,  Value = 1.30 },
+		[6] = { GemCost = 7500,  Value = 1.80 },
+		[7] = { GemCost = 15000, Value = 2.40 },
+		[8] = { GemCost = 30000, Value = 3.10 },
+		[9] = { GemCost = 60000, Value = 4.00 },
 	},
 }
 
@@ -40,28 +41,39 @@ UpgradeConfig.Luck = {
 UpgradeConfig.Incubator = {
 	MaxLevel = 9,
 	Levels = {
-		[1] = { Name = "Hay Nest",            Reduction = 0.10, Cost = 100,  Currency = "Cash" },
-		[2] = { Name = "Clay Kiln",           Reduction = 0.20, Cost = 300,  Currency = "Cash" },
-		[3] = { Name = "Copper Warmer",       Reduction = 0.30, Cost = 800,  Currency = "Cash" },
-		[4] = { Name = "Crystal Chamber",     Reduction = 0.40, Cost = 2000, Currency = "Cash" },
-		[5] = { Name = "Arcane Forge",        Reduction = 0.50, Cost = 5000, Currency = "Cash" },
-		[6] = { Name = "Volcanic Cradle",     Reduction = 0.62, Cost = 200,  Currency = "Gems" },
-		[7] = { Name = "Quantum Pod",         Reduction = 0.74, Cost = 600,  Currency = "Gems" },
-		[8] = { Name = "Celestial Nest",      Reduction = 0.85, Cost = 1500, Currency = "Gems" },
-		[9] = { Name = "The Primordial Core", Reduction = 0.95, Cost = 4000, Currency = "Gems" },
+		[1] = { Name = "Hay Nest",            Reduction = 0.10, Cost = 20,   Currency = "Gems" },
+		[2] = { Name = "Clay Kiln",           Reduction = 0.20, Cost = 50,   Currency = "Gems" },
+		[3] = { Name = "Copper Warmer",       Reduction = 0.30, Cost = 110,  Currency = "Gems" },
+		[4] = { Name = "Crystal Chamber",     Reduction = 0.40, Cost = 220,  Currency = "Gems" },
+		[5] = { Name = "Arcane Forge",        Reduction = 0.50, Cost = 400,  Currency = "Gems" },
+		[6] = { Name = "Volcanic Cradle",     Reduction = 0.62, Cost = 650,  Currency = "Gems" },
+		[7] = { Name = "Quantum Pod",         Reduction = 0.74, Cost = 1000, Currency = "Gems" },
+		[8] = { Name = "Celestial Nest",      Reduction = 0.85, Cost = 1600, Currency = "Gems" },
+		[9] = { Name = "The Primordial Core", Reduction = 0.95, Cost = 2600, Currency = "Gems" },
 	},
 }
 
 ------------------------------------------------------------------------- REBIRTH
 UpgradeConfig.Rebirth = {
-	-- LifetimeCash you must reach to be allowed your NEXT rebirth (indexed by
-	-- rebirthCount). For rebirthCount >= 5: previous * 2.5 (floored).
-	CashMilestones = { [0] = 50000, [1] = 150000, [2] = 400000, [3] = 1000000, [4] = 2500000 },
-	CashMilestoneGrowth = 2.5,
-	-- Gem cost of your NEXT rebirth (indexed by rebirthCount). For
-	-- rebirthCount >= 5: previous * 1.75 (floored).
-	GemCosts = { [0] = 500, [1] = 875, [2] = 1531, [3] = 2678, [4] = 4687 },
-	GemCostGrowth = 1.75,
+	-- LIFETIME cash required to PERFORM each rebirth, indexed by the rebirth NUMBER you are
+	-- working toward (1 = your first rebirth). LifetimeCash is CUMULATIVE and NEVER resets, so
+	-- each entry is the absolute total ever-earned cash needed to unlock that rebirth. Beyond
+	-- #12: previous * MilestoneGrowth (floored). Tuned STARTER values — edit freely.
+	LifetimeMilestones = {
+		[1]  = 3600,
+		[2]  = 51800,
+		[3]  = 223900,
+		[4]  = 749800,
+		[5]  = 2220300,
+		[6]  = 6206400,
+		[7]  = 16574600,
+		[8]  = 42908700,
+		[9]  = 108603700,
+		[10] = 270201500,
+		[11] = 663221800,
+		[12] = 1610196300,
+	},
+	MilestoneGrowth = 2.4,
 }
 
 ------------------------------------------------------------------------- HELPERS
@@ -86,42 +98,47 @@ function UpgradeConfig.incubatorReduction(incubatorLevel: number): number
 	return UpgradeConfig.Incubator.Levels[lvl].Reduction
 end
 
--- LifetimeCash milestone required for the rebirth at `rebirthCount`.
--- Table for 0..4, then *2.5 compounding (floored) beyond.
-function UpgradeConfig.cashMilestone(rebirthCount: number): number
-	local milestones = UpgradeConfig.Rebirth.CashMilestones
-	if milestones[rebirthCount] then
-		return milestones[rebirthCount]
+-- Rebirths required to BUY an incubator tier: tiers 1-3 open (0), 4-6 need 5, 7-9 need 10.
+function UpgradeConfig.incubatorTierUnlockRebirths(level: number): number
+	if level >= 7 then
+		return 10
+	elseif level >= 4 then
+		return 5
 	end
-	local value = milestones[4]
-	for _ = 5, rebirthCount do
-		value = math.floor(value * UpgradeConfig.Rebirth.CashMilestoneGrowth)
+	return 0
+end
+
+-- LIFETIME cash required for a player with `rebirthCount` rebirths to do their NEXT rebirth
+-- (i.e. the requirement for rebirth #rebirthCount+1). Table for 1..12, then *MilestoneGrowth.
+function UpgradeConfig.cashMilestone(rebirthCount: number): number
+	local target = (rebirthCount or 0) + 1
+	local m = UpgradeConfig.Rebirth.LifetimeMilestones
+	if m[target] then
+		return m[target]
+	end
+	local value = m[12]
+	for _ = 13, target do
+		value = math.floor(value * UpgradeConfig.Rebirth.MilestoneGrowth)
 	end
 	return value
 end
 
--- Gem cost of the rebirth at `rebirthCount` (the cost of your NEXT rebirth).
--- Table for 0..4, then *1.75 compounding (floored) beyond.
-function UpgradeConfig.gemCost(rebirthCount: number): number
-	local costs = UpgradeConfig.Rebirth.GemCosts
-	if costs[rebirthCount] then
-		return costs[rebirthCount]
-	end
-	local value = costs[4]
-	for _ = 5, rebirthCount do
-		value = math.floor(value * UpgradeConfig.Rebirth.GemCostGrowth)
-	end
-	return value
+-- Rebirth no longer costs Gems (it is gated purely by LIFETIME cash). Kept returning 0
+-- for backward compatibility with any caller/snapshot that still references it.
+function UpgradeConfig.gemCost(_rebirthCount: number): number
+	return 0
 end
 
 -- Permanent, compounding rebirth income multipliers + the level-cost multiplier.
 -- These are derived purely from the rebirth count.
-function UpgradeConfig.gemMultiplier(rebirths: number): number
-	return 1.5 ^ rebirths
+-- Rebirth grants NO gem multiplier — gem income is fixed per brainrot. Always 1.
+function UpgradeConfig.gemMultiplier(_rebirths: number): number
+	return 1
 end
 
+-- Permanent, compounding CASH multiplier: 1.35x per rebirth.
 function UpgradeConfig.cashMultiplier(rebirths: number): number
-	return 1.2 ^ rebirths
+	return 1.35 ^ rebirths
 end
 
 function UpgradeConfig.levelCostMultiplier(rebirths: number): number

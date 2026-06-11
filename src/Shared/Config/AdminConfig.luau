@@ -20,11 +20,11 @@ AdminConfig.Usernames = {
 	["kelvinisco"] = true,
 }
 
--- Values the /test command fills Cash and Gems to. Huge but well inside a Lua
--- double's exact-integer range (2^53), so every cost in the game is trivially
--- affordable and Format.short renders it as "1T".
-AdminConfig.MaxCash = 1e12 -- 1 trillion
-AdminConfig.MaxGems = 1e12
+-- Values the /test command fills Cash and Gems to (admins only — kelvinisco is in the
+-- allow-list above). Well inside a Lua double's exact-integer range (2^53), so it persists
+-- and Format.short renders it cleanly (e.g. "100M").
+AdminConfig.MaxCash = 100000000 -- 100 million
+AdminConfig.MaxGems = 100000000 -- 100 million
 
 -- Is this player an admin? UserId match first, then case-insensitive username.
 function AdminConfig.isAdmin(player: Player): boolean

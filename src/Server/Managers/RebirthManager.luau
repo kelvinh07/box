@@ -1,22 +1,19 @@
 --!strict
 -- RebirthManager
--- Rebirth: requires ALL THREE of (1) LifetimeCash >= the cash milestone,
--- (2) enough Gems for the rebirth cost, and (3) being in the correct (highest
--- unlocked) zone. On success it charges the Gems, RESETS Cash + LifetimeCash to
--- 0, bumps Rebirths, recomputes the permanent compounding multipliers
--- (gems 1.5^rb, cash 1.2^rb, level-cost 1.5^rb), and moves the player to the
--- highest unlocked zone. The Collection (and every brainrot's level) PERSISTS
--- through rebirth, as does the in-progress Incubator.
+-- Rebirth is gated PURELY by cumulative LifetimeCash (which NEVER resets). On rebirth:
+--   * Cash resets to 0 and the GEM BALANCE resets to 0 (LifetimeCash is untouched).
+--   * Rebirths++ and the permanent compounding CASH multiplier becomes 1.35^Rebirths
+--     (there is NO gem multiplier — gem income is fixed per brainrot).
+--   * ALL zone walls re-lock: CurrentZone resets to 1 and the player is teleported home.
+--   * KEPT: the whole Collection (+ levels), every owned shovel/incubator/luck tier, plots.
 --
--- The reward is the permanent gem income x1.5 / cash income x1.2 per rebirth
--- (applied in BrainrotMath via the multipliers). There is no luck bonus and no
--- "must unlock a new zone" gate, so rebirths keep going past the last zone.
+-- The reward is the permanent x1.35-per-rebirth cash multiplier (applied in BrainrotMath).
+-- Triggered ONLY from the Rebirth UI (the 🔄 icon) now — the zone walls are cash-purchases.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage.Shared
 
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
-local ZoneConfig = require(Shared.Config.ZoneConfig)
 local Format = require(Shared.Modules.Format)
 local Net = require(Shared.Modules.Net)
 
@@ -35,40 +32,28 @@ function RebirthManager.rebirth(player: Player): any
 		return { ok = false, reason = "No profile." }
 	end
 
-	-- (1) must reach the LifetimeCash milestone for the current rebirth count
+	-- gated PURELY by cumulative LifetimeCash reaching the NEXT rebirth's milestone
 	local milestone = UpgradeConfig.cashMilestone(p.Rebirths)
 	if p.LifetimeCash < milestone then
-		return { ok = false, reason = ("Earn $%s to rebirth."):format(Format.short(milestone)) }
+		return { ok = false, reason = ("Reach $%s lifetime cash to rebirth."):format(Format.comma(milestone)) }
 	end
 
-	-- (2) must be able to afford the gem cost
-	local cost = UpgradeConfig.gemCost(p.Rebirths)
-	if p.Gems < cost then
-		return { ok = false, reason = ("Need %s Gems to rebirth."):format(Format.short(cost)) }
-	end
-
-	-- (3) must be in the correct (highest unlocked) zone
-	if p.CurrentZone ~= ZoneConfig.highestUnlocked(p.Rebirths) then
-		return { ok = false, reason = "Reach the highest zone to rebirth." }
-	end
-
-	-- perform rebirth: charge gems, reset Cash + LifetimeCash, recompute the
-	-- permanent compounding multipliers, and advance to the highest unlocked zone.
-	-- Collection + brainrot levels and the in-progress Incubator are KEPT.
-	p.Gems -= cost
+	-- perform rebirth: reset Cash + GEM BALANCE (NOT LifetimeCash), re-lock all walls, bump
+	-- Rebirths, recompute the permanent cash multiplier. Collection + brainrot levels and all
+	-- owned shovel/incubator/luck tiers + plots are KEPT.
 	p.Rebirths += 1
 	p.Cash = 0
-	p.LifetimeCash = 0
-	p.GemMultiplier = UpgradeConfig.gemMultiplier(p.Rebirths)
-	p.CashMultiplier = UpgradeConfig.cashMultiplier(p.Rebirths)
+	p.Gems = 0
+	p._gemAccumulator = 0
+	p.CashMultiplier = UpgradeConfig.cashMultiplier(p.Rebirths) -- 1.35^rb
+	p.GemMultiplier = UpgradeConfig.gemMultiplier(p.Rebirths)   -- always 1 (no gem bonus)
 	p.LevelCostMultiplier = UpgradeConfig.levelCostMultiplier(p.Rebirths)
-	p.CurrentZone = ZoneConfig.highestUnlocked(p.Rebirths)
+	p.CurrentZone = 1 -- walls re-lock; start back at zone 1
 
 	if BaseManager then
 		BaseManager.rebuildPlots(player)
-		-- refresh the player's zone-gate group so the wall they just broke down lets
-		-- them through (and they can still freely return to their base in the lobby)
-		BaseManager.applyZoneGate(player)
+		BaseManager.applyZoneGate(player) -- re-group so the re-locked walls block again
+		BaseManager.teleportHome(player)  -- send them home, behind the walls
 	end
 
 	PlayerData.markDirty(player)
@@ -76,10 +61,7 @@ function RebirthManager.rebirth(player: Player): any
 
 	Net.getEvent("Notify"):FireClient(player, {
 		title = "REBIRTH!",
-		text = ("Gems now x%.2f, Cash now x%.2f — permanent!"):format(
-			p.GemMultiplier,
-			p.CashMultiplier
-		),
+		text = ("Cash income now x%.2f — permanent! Walls reset; climb again."):format(p.CashMultiplier),
 		color = "Legendary",
 	})
 

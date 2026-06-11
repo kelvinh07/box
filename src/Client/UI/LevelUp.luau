@@ -7,8 +7,8 @@
 -- locally (ClickDetector fires client-side for the clicker), looks the brainrot
 -- up in the snapshot Collection, and shows a level-up panel.
 --
--- The panel previews the income gain from the NEXT level and shows the exact
--- cost (Cash for levels 2-5, Gems for 6-10), scaled by the rebirth
+-- The panel previews the CASH gain from the NEXT level (gem income is FIXED and does NOT
+-- change with level) and shows the exact Cash cost, scaled by the rebirth
 -- levelCostMultiplier. Leveling is validated server-side via the LevelBrainrot
 -- remote; the panel just reflects the snapshot and re-renders on every push.
 

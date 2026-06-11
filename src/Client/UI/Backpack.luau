@@ -135,20 +135,39 @@ function Backpack.build(gui: ScreenGui)
 		end
 	end)
 
-	-- the 🎒 button: middle-left, toggles the panel
+	-- the Backpack icon button: middle-left, toggles the panel. Transparent image (no box),
+	-- matching the other left-column icons (icon fills + slightly overflows the 64x64 button).
 	local btn = UIUtil.button({
 		Name = "BackpackButton",
 		Size = UDim2.new(0, 64, 0, 64),
 		Position = UDim2.new(0, 16, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
-		BackgroundColor3 = UIUtil.Colors.Warn,
-		Text = "🎒",
-		TextSize = 34,
+		BackgroundTransparency = 1,
+		Text = "",
 		Parent = gui,
 	})
+	local stroke = btn:FindFirstChildWhichIsA("UIStroke")
+	if stroke then stroke.Enabled = false end
+	local icon = Instance.new("ImageLabel")
+	icon.Name = "Icon"
+	icon.BackgroundTransparency = 1
+	icon.Image = "rbxassetid://79259744487571"
+	icon.Size = UDim2.new(1, 40, 1, 40)
+	icon.Position = UDim2.new(0.5, 0, 0.5, 0)
+	icon.AnchorPoint = Vector2.new(0.5, 0.5)
+	icon.ScaleType = Enum.ScaleType.Fit
+	icon.ZIndex = btn.ZIndex + 1
+	icon.Parent = btn
+	local backpackEntry = UIUtil.registerPanel(function()
+		panel.Visible = false
+	end)
 	btn.MouseButton1Click:Connect(function()
-		panel.Visible = not panel.Visible
-		if panel.Visible then
+		local willOpen = not panel.Visible
+		if willOpen then
+			UIUtil.closeOtherPanels(backpackEntry) -- one popup at a time
+		end
+		panel.Visible = willOpen
+		if willOpen then
 			UIUtil.pop(panel)
 		end
 	end)

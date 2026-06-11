@@ -10,6 +10,7 @@
 
 local InsertService = game:GetService("InsertService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 local Shared = ReplicatedStorage.Shared
 
 local BrainrotConfig = require(Shared.Config.BrainrotConfig)
@@ -21,7 +22,10 @@ local Format = require(Shared.Modules.Format)
 
 local BrainrotFactory = {}
 
-local PODIUM_SIZE = Vector3.new(6, 1, 6)
+-- The brainrot's platform/pedestal. A single THICK gray block (BaseManager.buildPodium) — the
+-- footprint matches the old cyan rim (7x7) and it's THICKENED to ~2.3 tall (a touch under the
+-- LEVEL UP sign's height) so the LEVEL UP sign can mount on its inward side face.
+local PODIUM_SIZE = Vector3.new(7, 2.3, 7)
 
 ----------------------------------------------------------------- placeholder
 -- A chunky stylized "brainrot": rounded body + eyes + little feet. Intentionally
@@ -117,15 +121,120 @@ local function tryInsert(assetId: number, name: string): Model?
 	return nil
 end
 
--- Normalize any model to ~ uniform display size and center it.
+-- The display target for a model's VISIBLE longest axis after scaling. The podium top is only
+-- 7 wide, so this intentionally OVERFLOWS it — per design we'd rather a model spill over the
+-- podium edge than read as a tiny floating speck (was 7, measured off the inflated bbox below).
+local DISPLAY_MAX_AXIS = 10
+
+-- World-space (center, size) of ONLY the rendered parts. The imported animal models each carry an
+-- oversized INVISIBLE RootPart (their PrimaryPart) that balloons Model:GetBoundingBox() — that
+-- made the old normalizeSize divide by a too-big number and shrink the visible animal to a
+-- fraction of the podium. We skip the RootPart + any transparent VFX and measure real geometry.
+local function visibleBounds(model: Model): (Vector3, Vector3)
+	local min: Vector3?, max: Vector3? = nil, nil
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency < 0.95 and not (d == model.PrimaryPart and d.Name == "RootPart") then
+			local cf, half = d.CFrame, d.Size / 2
+			for sx = -1, 1, 2 do
+				for sy = -1, 1, 2 do
+					for sz = -1, 1, 2 do
+						local c = (cf * CFrame.new(sx * half.X, sy * half.Y, sz * half.Z)).Position
+						if not min then
+							min, max = c, c
+						else
+							min = Vector3.new(math.min(min.X, c.X), math.min(min.Y, c.Y), math.min(min.Z, c.Z))
+							max = Vector3.new(math.max(max.X, c.X), math.max(max.Y, c.Y), math.max(max.Z, c.Z))
+						end
+					end
+				end
+			end
+		end
+	end
+	if not min or not max then
+		local cf, s = model:GetBoundingBox() -- nothing visible (shouldn't happen): fall back to the full bbox
+		return cf.Position, s
+	end
+	return (min + max) / 2, max - min
+end
+
+-- Scale the model so its VISIBLE longest axis is DISPLAY_MAX_AXIS * scale.
+-- We deliberately DO NOT use Model:ScaleTo here. These imported animals are rigged (Motor6D joints
+-- whose stored transforms don't match the authored part CFrames), and ScaleTo rebuilds the model
+-- through those joints — which scatters several models to 1000+ studs and paradoxically SHRINKS
+-- others (this is why some brainrots read tiny). Since the display models are anchored + inert,
+-- the joints don't matter, so we scale every part manually about the visible center instead.
 local function normalizeSize(model: Model, scale: number)
-	local _, size = model:GetBoundingBox()
+	local center, size = visibleBounds(model)
 	local maxAxis = math.max(size.X, size.Y, size.Z)
 	if maxAxis <= 0 then return end
-	local target = 4.5 * scale
-	local factor = target / maxAxis
-	if model.PrimaryPart then
-		model:ScaleTo(factor)
+	local factor = (DISPLAY_MAX_AXIS * scale) / maxAxis
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local pos = d.Position
+			local rot = d.CFrame - pos -- rotation-only CFrame
+			d.Size *= factor
+			d.CFrame = rot + (center + (pos - center) * factor)
+			local mesh = d:FindFirstChildWhichIsA("DataModelMesh") -- SpecialMesh/BlockMesh/etc.
+			if mesh then
+				mesh.Scale *= factor
+				mesh.Offset *= factor
+			end
+		elseif d:IsA("Attachment") then
+			d.Position *= factor
+		end
+	end
+end
+
+----------------------------------------------------------------- imported animal models
+-- The imported "Animals" models live in ServerStorage.BrainrotModels, named exactly like the
+-- BrainrotConfig keys. Clone the matching one, anchored + non-colliding, ready for the podium.
+local function cloneRealModel(name: string): Model?
+	local folder = ServerStorage:FindFirstChild("BrainrotModels")
+	local src = folder and folder:FindFirstChild(name)
+	if not src or not src:IsA("Model") then
+		return nil
+	end
+	local m = src:Clone()
+	for _, d in ipairs(m:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = true
+			d.CanCollide = false
+		end
+	end
+	if not m.PrimaryPart then
+		m.PrimaryPart = (m:FindFirstChild("RootPart") :: BasePart?) or m:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return m
+end
+
+-- Recolor a variant VERSION of a model: Gold -> gold, Diamond -> diamond-cyan, Galaxy ->
+-- purple (Normal is left as its real textured self). We clear mesh textures so the recolor
+-- shows as a solid, unmistakable gold/diamond/galaxy statue.
+local VARIANT_MATERIAL = {
+	Gold    = Enum.Material.Metal, -- metallic gold
+	Diamond = Enum.Material.Glass, -- cyan crystal
+	Galaxy  = Enum.Material.Glass, -- purple crystal (Neon washed the shape into a pink blob)
+}
+local function recolorVariant(model: Model, variant: string)
+	if variant == "Normal" then
+		return
+	end
+	local color = RarityColors.variant(variant) -- Gold=gold, Diamond=cyan, Galaxy=purple
+	local mat = VARIANT_MATERIAL[variant]
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Color = color
+			if mat then
+				d.Material = mat
+			end
+			if d:IsA("MeshPart") then
+				d.TextureID = ""
+			end
+			local sa = d:FindFirstChildWhichIsA("SurfaceAppearance")
+			if sa then
+				sa:Destroy()
+			end
+		end
 	end
 end
 
@@ -139,10 +248,12 @@ local function applyGlow(model: Model, variant: string)
 	local primary = model.PrimaryPart
 	if not primary then return end
 
+	-- a SUBTLE glow only — bright lights washed the gold/diamond models out so you couldn't
+	-- see the character. Keep it low so the recolored model still reads clearly.
 	local light = Instance.new("PointLight")
 	light.Color = color
-	light.Brightness = 4
-	light.Range = 14
+	light.Brightness = 1
+	light.Range = 7
 	light.Parent = primary
 
 	local attach = Instance.new("Attachment")
@@ -150,26 +261,16 @@ local function applyGlow(model: Model, variant: string)
 
 	local sparkles = Instance.new("ParticleEmitter")
 	sparkles.Color = ColorSequence.new(color)
-	sparkles.LightEmission = 1
-	sparkles.Size = NumberSequence.new(0.6)
+	sparkles.LightEmission = 0.4
+	sparkles.Size = NumberSequence.new(0.45)
 	sparkles.Lifetime = NumberRange.new(0.6, 1.2)
-	sparkles.Rate = (variant == "Galaxy") and 30 or 12
+	sparkles.Rate = (variant == "Galaxy") and 16 or 8
 	sparkles.Speed = NumberRange.new(1, 3)
 	sparkles.SpreadAngle = Vector2.new(180, 180)
 	sparkles.Texture = "rbxassetid://6334482272" -- generic spark
 	sparkles.Parent = primary
 
-	if data.Rainbow then
-		-- galaxy: animate a rainbow shimmer on the body color
-		task.spawn(function()
-			local hue = 0
-			while primary.Parent do
-				hue = (hue + 0.01) % 1
-				primary.Color = Color3.fromHSV(hue, 0.8, 1)
-				task.wait(0.05)
-			end
-		end)
-	end
+	-- (Galaxy is now a solid PURPLE recolor via recolorVariant — no rainbow shimmer.)
 end
 
 ----------------------------------------------------------------- label
@@ -180,12 +281,13 @@ local function buildLabel(model: Model, entry: any, rebirthCount: number)
 	local bb = Instance.new("BillboardGui")
 	bb.Name = "InfoLabel"
 	bb.Size = UDim2.new(0, 220, 0, 64)
-	bb.StudsOffset = Vector3.new(0, 4.5, 0)
+	bb.StudsOffset = Vector3.new(0, 8, 0) -- clears the bigger (DISPLAY_MAX_AXIS) model below it
 	bb.AlwaysOnTop = true
 	bb.MaxDistance = 120
 	bb.Parent = primary
 
 	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "Name"
 	nameLabel.Size = UDim2.new(1, 0, 0.55, 0)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Font = Enum.Font.FredokaOne
@@ -197,6 +299,7 @@ local function buildLabel(model: Model, entry: any, rebirthCount: number)
 	nameLabel.Parent = bb
 
 	local variantLabel = Instance.new("TextLabel")
+	variantLabel.Name = "Income" -- BaseManager refreshes this line's $/s after the brainrot levels up
 	variantLabel.Size = UDim2.new(1, 0, 0.45, 0)
 	variantLabel.Position = UDim2.new(0, 0, 0.55, 0)
 	variantLabel.BackgroundTransparency = 1
@@ -219,19 +322,25 @@ function BrainrotFactory.build(entry: any, rebirthCount: number): Model
 	local scale = base and base.Scale or 1
 	local color = base and base.Color or Color3.fromRGB(200, 200, 200)
 
-	local model: Model? = nil
-	local assetId = AssetConfig.brainrotAssetId(entry.base)
-	if assetId then
-		model = tryInsert(assetId, entry.base)
-		if model then
-			normalizeSize(model, scale)
+	-- 1) the imported animal model (ServerStorage.BrainrotModels); else 2) a Creator Store asset
+	-- id; else 3) a procedural placeholder so the game still works if a model is missing.
+	local model: Model? = cloneRealModel(entry.base)
+	if model then
+		normalizeSize(model, scale)
+	else
+		local assetId = AssetConfig.brainrotAssetId(entry.base)
+		if assetId then
+			model = tryInsert(assetId, entry.base)
+			if model then
+				normalizeSize(model, scale)
+			end
+		end
+		if not model then
+			model = buildPlaceholder(entry.base, color, scale)
 		end
 	end
-	if not model then
-		-- FALLBACK PLACEHOLDER — swap in a Creator Store asset id in AssetConfig.
-		model = buildPlaceholder(entry.base, color, scale)
-	end
 
+	recolorVariant(model, entry.variant) -- Gold/Diamond/Galaxy recolor (Normal keeps real textures)
 	applyGlow(model, entry.variant)
 	buildLabel(model, entry, rebirthCount)
 	model:SetAttribute("BrainrotId", entry.id)

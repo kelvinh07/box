@@ -23,11 +23,13 @@ local TopBar = require(UI.TopBar)
 local HUD = require(UI.HUD)
 local Backpack = require(UI.Backpack)
 local HomeButton = require(UI.HomeButton)
+local ShopsButton = require(UI.ShopsButton)
 local Stands = require(UI.Stands)
 local Collection = require(UI.Collection)
+local CollectionButton = require(UI.CollectionButton)
+local RebirthButton = require(UI.RebirthButton)
 local Rebirth = require(UI.Rebirth)
 local LevelUp = require(UI.LevelUp)
-local SideNav = require(UI.SideNav)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -66,11 +68,17 @@ startSafe("TopBar", function() TopBar.build(screen) end)
 startSafe("HUD", function() HUD.build(screen) end)
 startSafe("Backpack", function() Backpack.build(screen) end)
 startSafe("HomeButton", function() HomeButton.build(screen) end)
+startSafe("ShopsButton", function() ShopsButton.build(screen) end)
 
 -- modal panels
 local collection, rebirth
 startSafe("Collection", function() collection = Collection.build(screen) end)
 startSafe("Rebirth", function() rebirth = Rebirth.build(screen) end)
+
+-- left-side Collection icon (next to the 🎒 Backpack button) toggles the Collection modal
+startSafe("CollectionButton", function()
+	CollectionButton.build(screen, function() if collection then collection.toggle() end end)
+end)
 
 -- the three stand upgrade panels (opened by walking up to a stand, not the SideNav)
 startSafe("Stands", function() Stands.start(screen) end)
@@ -78,12 +86,9 @@ startSafe("Stands", function() Stands.start(screen) end)
 -- per-brainrot level-up panel (opened by clicking your brainrot on its podium)
 startSafe("LevelUp", function() LevelUp.start(screen) end)
 
--- right-side navigation toggles the modals (guarded in case a panel above failed)
-startSafe("SideNav", function()
-	SideNav.build(screen, {
-		{ id = "Collection", text = "📦",  color = UIUtil.Colors.Gem,  onClick = function() if collection then collection.toggle() end end },
-		{ id = "Rebirth",    text = "🔄",  color = Color3.fromRGB(220, 55, 65), onClick = function() if rebirth then rebirth.toggle() end end },
-	})
+-- left-column Rebirth icon (below Collection) toggles the Rebirth modal; pulses when ready
+startSafe("RebirthButton", function()
+	RebirthButton.build(screen, function() if rebirth then rebirth.toggle() end end)
 end)
 
 print("[HatchABrainrot] Client UI ready.")

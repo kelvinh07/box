@@ -20,6 +20,7 @@ local Shared = ReplicatedStorage.Shared
 
 local GameConfig = require(Shared.Config.GameConfig)
 local ZoneConfig = require(Shared.Config.ZoneConfig)
+local EggConfig = require(Shared.Config.EggConfig)
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
 local ShovelConfig = require(Shared.Config.ShovelConfig)
 local Util = require(Shared.Modules.Util)
@@ -157,7 +158,7 @@ function DiggingManager.dig(player: Player, id: string): any
 	-- across every rarity; if they're at/over the cap, refuse BEFORE granting so
 	-- the pending egg stays assigned and the mound just resets client-side.
 	local total = 0
-	for _, r in ipairs({ "Common", "Uncommon", "Rare", "Legendary" }) do
+	for _, r in ipairs(EggConfig.Order) do
 		total += (profile.Eggs[r] or 0)
 	end
 	local cap = GameConfig.eggCapacity(profile.Rebirths)

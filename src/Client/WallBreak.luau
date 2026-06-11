@@ -1,15 +1,16 @@
 --!strict
 -- WallBreak (client)
--- The zone (rebirth) walls are ONE shared server part each, so the server can't make a
--- wall vanish for just one player. When THIS player unlocks a new zone, we play a quick
--- 3-frame crack + shatter and then HIDE the wall LOCALLY (LocalTransparencyModifier + local
--- texture/GUI hide) and spawn CLIENT-LOCAL debris. Because all of that is client-side, other
--- players in the lobby still see the wall solid until THEY unlock it — it differs per player.
+-- The zone walls are ONE shared server part each, so the server can't make a wall vanish for
+-- just one player. When THIS player breaks a wall (CASH purchase -> their HighestZone rises),
+-- we play a quick crack + shatter and HIDE the wall LOCALLY (LocalTransparencyModifier + local
+-- texture/GUI hide) and spawn CLIENT-LOCAL debris. Because that's client-side, other players
+-- still see the wall solid until THEY break it.
+--
+-- On REBIRTH the walls re-lock (HighestZone drops back to 1), so any wall now at/above the
+-- player's frontier is RE-SHOWN (un-hidden) and can be broken again.
 --
 -- Walls are named "RebirthWall_k" (k = 1..MaxZone-1) under Workspace.DigLane. Wall k sits
--- between zone k and zone k+1, so a player whose highest-unlocked zone is H has passed walls
--- 1..H-1. Walls already unlocked when you join are hidden instantly (no animation); a wall
--- you cross DURING the session cracks + shatters.
+-- between zone k and zone k+1, so a player whose highest zone is H has broken walls 1..H-1.
 
 local Workspace = game:GetService("Workspace")
 local Debris = game:GetService("Debris")
@@ -22,6 +23,7 @@ local WallBreak = {}
 local laneFolder: Instance?
 local broken: { [number]: boolean } = {}
 local firstHighest: number? = nil
+local savedTransparency: { [Instance]: number } = {} -- original Texture/Decal transparency
 
 local function getWall(k: number): BasePart?
 	if not laneFolder then
@@ -37,11 +39,28 @@ local function hideWallLocal(wall: BasePart)
 	wall.LocalTransparencyModifier = 1
 	for _, d in ipairs(wall:GetDescendants()) do
 		if d:IsA("Texture") or d:IsA("Decal") then
+			if savedTransparency[d] == nil then
+				savedTransparency[d] = d.Transparency
+			end
 			d.Transparency = 1
 		elseif d:IsA("SurfaceGui") or d:IsA("BillboardGui") then
 			d.Enabled = false
 		elseif d:IsA("ClickDetector") then
 			d.MaxActivationDistance = 0
+		end
+	end
+end
+
+-- reverse of hideWallLocal: bring the (re-locked) wall back to solid for this client.
+local function unhideWallLocal(wall: BasePart)
+	wall.LocalTransparencyModifier = 0
+	for _, d in ipairs(wall:GetDescendants()) do
+		if d:IsA("Texture") or d:IsA("Decal") then
+			d.Transparency = savedTransparency[d] or 0
+		elseif d:IsA("SurfaceGui") or d:IsA("BillboardGui") then
+			d.Enabled = true
+		elseif d:IsA("ClickDetector") then
+			d.MaxActivationDistance = 30
 		end
 	end
 end
@@ -128,6 +147,18 @@ local function breakWall(k: number, animate: boolean)
 	end
 end
 
+-- re-show a wall that re-locked on rebirth (frontier dropped back below it).
+local function restoreWall(k: number)
+	if not broken[k] then
+		return
+	end
+	broken[k] = false
+	local wall = getWall(k)
+	if wall then
+		unhideWallLocal(wall)
+	end
+end
+
 function WallBreak.start()
 	laneFolder = Workspace:WaitForChild("DigLane", 20)
 
@@ -141,10 +172,16 @@ function WallBreak.start()
 		if firstHighest == nil then
 			firstHighest = highest
 		end
-		-- a player at highest zone H has passed walls 1..H-1
+		-- a player at highest zone H has broken walls 1..H-1
 		for k = 1, highest - 1 do
 			if not broken[k] then
 				breakWall(k, k >= (firstHighest :: number)) -- animate only walls crossed THIS session
+			end
+		end
+		-- re-lock (un-hide) any broken wall now at/above the current frontier (e.g. after rebirth)
+		for k in pairs(broken) do
+			if k >= highest then
+				restoreWall(k)
 			end
 		end
 	end)

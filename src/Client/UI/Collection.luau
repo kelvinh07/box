@@ -19,7 +19,7 @@ local Sounds = require(script.Parent.Parent.Sounds)
 
 local Collection = {}
 
-local TIER_ORDER = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" }
+local TIER_ORDER = { "Common", "Uncommon", "Rare", "Epic", "Legendary" }
 
 local function makeCard(parent: Instance, entry: any, rebirths: number, order: number)
 	local variantColor = RarityColors.variant(entry.variant)

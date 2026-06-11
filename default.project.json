@@ -18,6 +18,13 @@
       }
     },
 
+    "ServerStorage": {
+      "$className": "ServerStorage",
+      "ShopModel": { "$path": "src/ServerStorage/ShopModel.rbxm" },
+      "EggIncubatorModel": { "$path": "src/ServerStorage/EggIncubatorModel.rbxm" },
+      "BrainrotModels": { "$path": "src/ServerStorage/BrainrotModels.rbxm" }
+    },
+
     "StarterPlayer": {
       "$className": "StarterPlayer",
       "StarterPlayerScripts": {
@@ -41,7 +48,7 @@
       "$properties": {
         "Technology": "ShadowMap",
         "Ambient": [0.3137, 0.3137, 0.3137],
-        "OutdoorAmbient": [0.4706, 0.549, 0.3922],
+        "OutdoorAmbient": [0.5882, 0.549, 0.5882],
         "Brightness": 4,
         "ExposureCompensation": 0.1,
         "ColorShift_Top": [1, 0.9804, 0.949],
@@ -55,6 +62,13 @@
       "$className": "SoundService",
       "$properties": {
         "RespectFilteringEnabled": true
+      }
+    },
+
+    "Players": {
+      "$className": "Players",
+      "$properties": {
+        "MaxPlayers": 6
       }
     }
   }

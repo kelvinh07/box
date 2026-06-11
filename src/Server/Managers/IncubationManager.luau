@@ -19,7 +19,6 @@ local Shared = ReplicatedStorage.Shared
 local EggConfig = require(Shared.Config.EggConfig)
 local BrainrotConfig = require(Shared.Config.BrainrotConfig)
 local VariantConfig = require(Shared.Config.VariantConfig)
-local ZoneConfig = require(Shared.Config.ZoneConfig)
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
 local GameConfig = require(Shared.Config.GameConfig)
 local Util = require(Shared.Modules.Util)
@@ -35,48 +34,22 @@ function IncubationManager.setBaseManager(bm: any)
 	BaseManager = bm
 end
 
--- Roll a variant, luck-weighted.
-local function rollVariant(luck: number): string
-	local weights = {}
-	for variant, data in pairs(VariantConfig.Variants) do
-		local bias = VariantConfig.LuckBias[variant] or 0
-		weights[variant] = data.Weight * (1 + luck * bias)
+-- Pick one { tier, variant } group from an egg's POOL (EggConfig.poolGroups), weighted by
+-- the variant's rarity (Normal common ... Diamond rare) and nudged toward the rarer variants
+-- by Luck. The egg fully determines what can hatch — zone no longer filters the brainrot.
+local function pickPoolGroup(eggRarity: string, luck: number): { tier: string, variant: string }?
+	local groups = EggConfig.poolGroups(eggRarity)
+	if #groups == 0 then
+		return nil
 	end
-	return Util.weightedPick(weights) or "Normal"
-end
-
-local rng = Random.new()
-
-local function zoneAllowsTier(zoneData: any, tier: string): boolean
-	for _, t in ipairs(zoneData.BrainrotTiers) do
-		if t == tier then
-			return true
-		end
+	local weights: { [number]: number } = {}
+	for i, g in ipairs(groups) do
+		local vdata = VariantConfig.get(g.variant)
+		local bias = VariantConfig.LuckBias[g.variant] or 0
+		weights[i] = (vdata and vdata.Weight or 1) * (1 + luck * bias)
 	end
-	return false
-end
-
--- Pick a base brainrot of `tier` that is allowed in the current `zone`.
--- In zones that unlock the exclusive Mythic tier, a Legendary egg has a
--- luck-boosted chance to "ascend" into a Mythic brainrot instead — this is the
--- only way Mythic brainrots are obtained, keeping them zone 2+ exclusive.
-local function rollBase(tier: string, zone: number, luck: number): string?
-	local zoneData = ZoneConfig.get(zone) or ZoneConfig.get(1)
-
-	if tier == "Legendary" and zoneAllowsTier(zoneData, "Mythic") then
-		local mythicChance = math.clamp(0.40 + 0.10 * luck, 0, 0.85)
-		if rng:NextNumber() < mythicChance then
-			tier = "Mythic"
-		end
-	end
-
-	if not zoneAllowsTier(zoneData, tier) then
-		-- fall back to the highest tier the zone *does* allow
-		tier = zoneData.BrainrotTiers[#zoneData.BrainrotTiers]
-	end
-
-	local names = BrainrotConfig.namesByTier(tier)
-	return Util.choice(names)
+	local idx = Util.weightedPick(weights)
+	return groups[idx] or groups[1]
 end
 
 -- You can only hatch while standing near ONE OF your incubators.
@@ -176,6 +149,11 @@ function IncubationManager.placeEgg(player: Player, rarity: string): any
 
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
+
+	-- show the egg inside the glass case immediately
+	if BaseManager and BaseManager.refreshIncubatorEggs then
+		BaseManager.refreshIncubatorEggs(player)
+	end
 	return { ok = true, slot = slot, duration = duration }
 end
 
@@ -200,22 +178,22 @@ function IncubationManager.collect(player: Player, index: number?): any
 		return { ok = false, reason = "All plots are full — sell or buy a plot." }
 	end
 
-	local egg = EggConfig.get(inc.rarity)
-	local tier = egg.BrainrotTier
 	local luck = UpgradeConfig.totalLuck(profile.LuckLevel, profile.Rebirths)
-
-	local baseName = rollBase(tier, profile.CurrentZone, luck)
+	local group = pickPoolGroup(inc.rarity, luck)
+	if not group then
+		return { ok = false, reason = "No brainrot available." }
+	end
+	local names = BrainrotConfig.namesByTier(group.tier)
+	local baseName = Util.choice(names)
 	if not baseName then
 		return { ok = false, reason = "No brainrot available." }
 	end
-	local baseData = BrainrotConfig.get(baseName)
-	local variant = rollVariant(luck)
 
 	local entry = {
 		id = Util.uid(),
 		base = baseName,
-		tier = baseData.Tier,
-		variant = variant,
+		tier = group.tier,         -- base brainrot tier (drives income + label colour)
+		variant = group.variant,   -- Normal / Gold / Diamond, set by the egg's pool
 		level = 1, -- brainrots start at level 1; levels persist through rebirth
 	}
 	table.insert(profile.Collection, entry)
@@ -228,6 +206,11 @@ function IncubationManager.collect(player: Player, index: number?): any
 
 	PlayerData.markDirty(player)
 	PlayerData.push(player)
+
+	-- remove the egg from the glass case now that it has hatched
+	if BaseManager and BaseManager.refreshIncubatorEggs then
+		BaseManager.refreshIncubatorEggs(player)
+	end
 
 	-- tell the client to play the reveal
 	Net.getEvent("HatchResult"):FireClient(player, entry)

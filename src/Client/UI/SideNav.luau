@@ -32,6 +32,25 @@ function SideNav.build(gui: ScreenGui, buttons: { any })
 			Parent = holder,
 		})
 		btn.MouseButton1Click:Connect(def.onClick)
+		if def.image then
+			btn.Text = ""
+			local img = Instance.new("ImageLabel")
+			img.Name = "Icon"
+			img.BackgroundTransparency = 1
+			img.Image = def.image
+			img.Size = UDim2.new(1, -16, 1, -16)
+			img.Position = UDim2.new(0.5, 0, 0.5, 0)
+			img.AnchorPoint = Vector2.new(0.5, 0.5)
+			img.ScaleType = Enum.ScaleType.Fit -- keeps the PNG's aspect ratio
+			img.ZIndex = btn.ZIndex + 1
+			img.Parent = btn
+		end
+		if def.transparent then
+			-- drop the colored box + outline so only the icon shows
+			btn.BackgroundTransparency = 1
+			local s = btn:FindFirstChildWhichIsA("UIStroke")
+			if s then s.Enabled = false end
+		end
 		if def.id == "Rebirth" then
 			rebirthBtn = btn
 		end

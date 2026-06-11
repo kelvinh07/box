@@ -4,16 +4,16 @@
 -- (EconomyManager) to grant income and by the CLIENT (Collection/preview) to show
 -- it — so the displayed number always matches what the server pays out.
 --
--- Income is TIER-BASED, then layered with the variant, the per-brainrot level,
--- and the permanent rebirth multipliers. Spec values are PER MINUTE; we divide by
--- 60 because the income loop ticks every 1s (so we return PER SECOND).
+-- CASH is the run currency: tier-based, scaled by the variant, the per-brainrot
+-- level, and the PERMANENT compounding rebirth multiplier (1.35^rebirths). It is
+-- sourced per-second and ROUNDED HALF-UP to a whole integer (no /60).
 --
---   cash/min = tierCash * Variant.CashMult * 1.2^(level-1) * 1.2^rebirthCount
---   gem/min  = (tierGem + Variant.GemBonus) * 1.2^(level-1) * 1.5^rebirthCount
---   income() returns each of the above divided by 60 (per-second).
+-- GEMS are a FIXED whole-number amount per (tier, variant). They do NOT scale with
+-- level and there is NO rebirth gem multiplier — a brainrot makes the same gems/sec
+-- forever. (The gem BALANCE still resets on rebirth; the RATE never changes.)
 --
--- ZoneConfig CashScale/GemScale are NO LONGER used by income — zone scaling has
--- been replaced by the rebirth multipliers.
+--   cash/sec = round( tierCashPerSec * Variant.CashMult * 1.2^(level-1) * 1.35^rebirthCount )
+--   gem/sec  = tierGemPerSec + Variant.GemBonus            (FIXED — no level, no rebirth, no /60)
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = ReplicatedStorage.Shared.Config
@@ -40,15 +40,18 @@ function BrainrotMath.income(entry: Entry, rebirthCount: number): (number, numbe
 		return 0, 0
 	end
 
-	local tierCash, tierGem = BrainrotConfig.tierIncomePerMin(entry.tier)
+	local tierCash, tierGem = BrainrotConfig.tierIncome(entry.tier) -- both per-second
 	local level = entry.level or 1
 	local levelMult = BrainrotConfig.levelMult(level)
 	local rb = rebirthCount or 0
 
-	local cashPerMin = tierCash * variant.CashMult * levelMult * (1.2 ^ rb)
-	local gemPerMin = (tierGem + variant.GemBonus) * levelMult * (1.5 ^ rb)
+	-- CASH scales with the variant, the per-brainrot level, and the compounding rebirth
+	-- multiplier (1.35^rb). Rounded HALF-UP to a whole integer so cash is never fractional.
+	local cashPerSec = tierCash * variant.CashMult * levelMult * (1.35 ^ rb)
+	-- GEMS are FIXED per (tier, variant): no level scaling, no rebirth multiplier, no /60.
+	local gemPerSec = tierGem + variant.GemBonus
 
-	return cashPerMin / 60, gemPerMin / 60
+	return math.floor(cashPerSec + 0.5), math.floor(gemPerSec)
 end
 
 return BrainrotMath

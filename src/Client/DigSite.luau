@@ -20,6 +20,7 @@ local RarityColors = require(Shared.Config.RarityColors)
 local ShovelConfig = require(Shared.Config.ShovelConfig)
 local Net = require(Shared.Modules.Net)
 local Surface = require(Shared.Modules.Surface)
+local PixelEgg = require(Shared.Modules.PixelEgg)
 
 local UIUtil = require(script.Parent.UIUtil)
 local ClientNet = require(script.Parent.ClientNet)
@@ -51,14 +52,14 @@ local REVEAL_MULT = {
 	Common    = 8,
 	Uncommon  = 10,
 	Rare      = 12,
+	Epic      = 13.5, -- between Rare and Legendary
 	Legendary = 15,
-	Mythic    = 15,
+	Mythic    = 17,   -- one size bigger than Legendary
 }
 
--- The egg is a PIXEL egg: cube "studs" (voxels) filling an egg ellipsoid.
--- width = height * ratio; VOX_H = how many voxels tall (higher = finer pixels,
--- more cube parts). Eggs are built lazily (one at a time) so a high count is fine.
-local EGG_WIDTH_RATIO = 0.72
+-- The egg is a PIXEL egg: cube "studs" (voxels) filling an egg ellipsoid (built by the
+-- shared PixelEgg module). VOX_H = how many voxels tall (higher = finer pixels, more cube
+-- parts). Eggs are built lazily (one at a time) so a high count is fine.
 local VOX_H = 12
 
 ----------------------------------------------------------------- ownership filter
@@ -97,45 +98,12 @@ end
 
 -- a PIXEL egg made of cube "studs": voxels filling an egg ellipsoid, parented to
 -- a Model that's moved/spun as one unit via PivotTo (driven by a CFrameValue
--- tween — efficient even with many cubes). Built lazily (one at a time).
+-- tween — efficient even with many cubes). Built lazily (one at a time). The voxel
+-- build itself lives in the SHARED PixelEgg module (the incubators reuse it); here we
+-- just wrap it with the CFrameValue "Drive" that animates the dug egg.
 local function buildVoxelEgg(model: Instance, x: number, z: number, centerY: number, height: number, color: Color3)
-	local eggModel = Instance.new("Model")
-	eggModel.Name = "Egg"
-
-	local core = Instance.new("Part")
-	core.Name = "EggCore"
-	core.Size = Vector3.new(0.2, 0.2, 0.2)
-	core.Transparency = 1
-	core.Anchored = true
-	core.CanCollide = false
-	core.CFrame = CFrame.new(x, centerY, z)
-	core.Parent = eggModel
-	eggModel.PrimaryPart = core
-
-	local rx, ry, rz = (height * EGG_WIDTH_RATIO) / 2, height / 2, (height * EGG_WIDTH_RATIO) / 2
-	local vox = height / VOX_H
-	local nx, ny, nz = math.floor(rx / vox), math.floor(ry / vox), math.floor(rz / vox)
-	for ix = -nx, nx do
-		for iy = -ny, ny do
-			for iz = -nz, nz do
-				local px, py, pz = ix * vox, iy * vox, iz * vox
-				if (px * px) / (rx * rx) + (py * py) / (ry * ry) + (pz * pz) / (rz * rz) <= 1 then
-					local cube = Instance.new("Part")
-					cube.Name = "Stud"
-					cube.Size = Vector3.new(vox, vox, vox)
-					cube.Color = color
-					cube.Material = Enum.Material.Plastic
-					cube.TopSurface = Enum.SurfaceType.Studs   -- classic Roblox stud look
-					cube.BottomSurface = Enum.SurfaceType.Inlet
-					cube.Anchored = true
-					cube.CanCollide = false
-					cube.CFrame = CFrame.new(x + px, centerY + py, z + pz)
-					cube.Parent = eggModel
-				end
-			end
-		end
-	end
-
+	local eggModel = PixelEgg.build(Vector3.new(x, centerY, z), height, color, VOX_H)
+	local core = eggModel.PrimaryPart :: BasePart
 	eggModel.Parent = model
 
 	-- CFrameValue drives the whole model via PivotTo (one tween moves all cubes)
@@ -273,6 +241,10 @@ function makeDigSpot(x: number, topY: number, z: number, id: string, zone: numbe
 
 	local model = Instance.new("Model")
 	model.Name = "DigSpot"
+	-- stamp the mound's lane position so a late-arriving no-dig marker (DigExclusion) can find
+	-- & prune any mound that landed inside it (see pruneNear in DigSite.start)
+	model:SetAttribute("X", x)
+	model:SetAttribute("Z", z)
 	model.Parent = spotsFolder
 
 	local patch = buildDirt(model, x, topY, z)
@@ -333,6 +305,17 @@ local function scatterPatch(patch: Instance)
 	end
 	local count = math.clamp(math.floor(area / 300 + 0.5), 5, 14)
 
+	-- The slab may define a central DIG CORE (DigHalf): mounds scatter only within +/-DigHalf
+	-- of the centre, leaving the expanded outer rim clear for grass + sprinkled trees. Falls
+	-- back to the old "80% of the slab" spread when the attribute is absent.
+	local digHalf = patch:GetAttribute("DigHalf")
+	local spreadX = (typeof(digHalf) == "number" and digHalf * 2) or (patch.Size.X * 0.8)
+	local spreadZ = (typeof(digHalf) == "number" and digHalf * 2) or (patch.Size.Z * 0.8)
+
+	local zone = patch:GetAttribute("Zone") or 1
+
+	-- candidate mound positions within the dig core (the no-dig filter is applied at PLACEMENT
+	-- below, after RollEggs succeeds, so the tree markers are guaranteed present by then)
 	local positions = {}
 	for _ = 1, count do
 		local x, z
@@ -343,13 +326,12 @@ local function scatterPatch(patch: Instance)
 			x = center.X + r * math.cos(theta)
 			z = center.Z + r * math.sin(theta)
 		else
-			x = center.X + (math.random() - 0.5) * patch.Size.X * 0.8
-			z = center.Z + (math.random() - 0.5) * patch.Size.Z * 0.8
+			x = center.X + (math.random() - 0.5) * spreadX
+			z = center.Z + (math.random() - 0.5) * spreadZ
 		end
 		table.insert(positions, { x = x, z = z })
 	end
 
-	local zone = patch:GetAttribute("Zone") or 1
 	-- RollEggs is refused until the player's profile has loaded. In a PUBLISHED game
 	-- that profile comes from DataStore (a slow network call with retries), so the
 	-- first request can lose the join race and fail -- which left the dig field empty.
@@ -370,9 +352,37 @@ local function scatterPatch(patch: Instance)
 	if not result then
 		return
 	end
+
+	-- Trees standing inside the dig clearing carry an INVISIBLE no-dig marker (tagged
+	-- DigExclusion server-side, with a ClearRadius + Zone): never PLACE a mound within that
+	-- radius so dirt patches don't spawn on/under a tree. Gathered HERE (after RollEggs
+	-- succeeded => the server finished init + built the markers) so they're present; any
+	-- late-replicating marker is still cleaned up by pruneNear (DigSite.start). Only THIS
+	-- zone's markers apply.
+	local exclusions = {}
+	for _, m in ipairs(CollectionService:GetTagged("DigExclusion")) do
+		if m:IsA("BasePart") and m:GetAttribute("Zone") == zone then
+			local cr = m:GetAttribute("ClearRadius")
+			exclusions[#exclusions + 1] = {
+				x = m.Position.X,
+				z = m.Position.Z,
+				r = (typeof(cr) == "number" and cr) or 12,
+			}
+		end
+	end
+	local function blocked(x: number, z: number): boolean
+		for _, e in ipairs(exclusions) do
+			local dx, dz = x - e.x, z - e.z
+			if dx * dx + dz * dz < e.r * e.r then
+				return true
+			end
+		end
+		return false
+	end
+
 	for i, egg in ipairs(result.eggs) do
 		local pos = positions[i]
-		if pos then
+		if pos and not blocked(pos.x, pos.z) then
 			-- the server returns the egg's effective ZONE (never its rarity); use it for the
 			-- zone-based dig timing so the client matches the server cooldown.
 			makeDigSpot(pos.x, topY, pos.z, egg.id, egg.zone or zone)
@@ -392,6 +402,41 @@ function DigSite.start(gui: ScreenGui)
 	CollectionService:GetInstanceAddedSignal("DigPatch"):Connect(function(patch)
 		task.wait(0.1)
 		scatterPatch(patch)
+	end)
+
+	-- A no-dig marker (DigExclusion, around each digsite tree) can replicate AFTER this client
+	-- already scattered that forest patch (the server builds the markers a beat after the dig
+	-- slabs, across a LoadAsset yield). Prune any mound sitting inside a marker's radius, and
+	-- re-prune whenever a marker streams in, so dirt patches never sit on the digsite trees
+	-- regardless of replication order (the scatter-time filter handles the markers-ready case).
+	-- Markers only ever exist in the forest zone and the zones are ~148 studs apart, so a
+	-- mound within a marker's (small) radius is necessarily that zone's mound — distance alone
+	-- is a safe match (the mound's own "zone" attr reflects DIG-TIMING, not its lane location).
+	local function pruneNear(marker: Instance)
+		if not marker:IsA("BasePart") then
+			return
+		end
+		local r = (marker:GetAttribute("ClearRadius") :: number?) or 12
+		local mx, mzz = marker.Position.X, marker.Position.Z
+		for _, model in ipairs(spotsFolder:GetChildren()) do
+			if model:IsA("Model") then
+				local x = model:GetAttribute("X") :: number?
+				local z = model:GetAttribute("Z") :: number?
+				if x and z then
+					local dx, dz = x - mx, z - mzz
+					if dx * dx + dz * dz < r * r then
+						model:Destroy()
+					end
+				end
+			end
+		end
+	end
+	for _, marker in ipairs(CollectionService:GetTagged("DigExclusion")) do
+		pruneNear(marker)
+	end
+	CollectionService:GetInstanceAddedSignal("DigExclusion"):Connect(function(marker)
+		task.wait(0.15)
+		pruneNear(marker)
 	end)
 
 	-- Shovel dig-speed: when the snapshot's DigSpeedMult changes, recompute every existing
