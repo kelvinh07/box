@@ -53,53 +53,40 @@ local function weldPartToHandle(part: BasePart, handle: Part)
 	weld.Parent = part
 end
 
--- World-space CENTER of ONLY the model's VISIBLE geometry. The imported brainrot models carry an
--- oversized INVISIBLE RootPart (their PrimaryPart) that is OFF-center from the rendered animal, so
--- pivoting on it makes a model hang/clip well off the hand. We measure the real geometry instead
--- (matches BrainrotFactory.visibleBounds, skipping the RootPart + transparent VFX) and return the
--- CENTER of that AABB so the held model can be CENTRED on the hand: at ~character size it then sits
--- at the avatar's body height (its bottom stays above the feet, so it never clips the floor, and it
--- doesn't float up above the head the way a bottom-at-hand offset did). Returns nil if nothing
--- visible (caller falls back to the pivot).
-local function visibleCenter(model: Model): Vector3?
-	local min: Vector3?, max: Vector3? = nil, nil
+-- World-space GRIP POINT for a held brainrot: the VOLUME-WEIGHTED CENTROID (≈ center of mass) of the
+-- model's VISIBLE geometry, skipping the oversized invisible RootPart + transparent VFX (matches
+-- BrainrotFactory.visibleBounds). Gripping the centroid of the BULK — rather than the AABB centre —
+-- means a model with a thin protrusion (a giraffe's neck, a horn) is gripped in its BODY instead of
+-- high up the bounding box, so EVERY brainrot reads as carried from the MIDDLE rather than "from the
+-- top". Returns nil if nothing visible (caller falls back to the pivot).
+local function visibleGrip(model: Model): Vector3?
+	local sum = Vector3.zero
+	local totalVol = 0
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") and d.Transparency < 0.95 and not (d == model.PrimaryPart and d.Name == "RootPart") then
-			local cf, half = d.CFrame, d.Size / 2
-			for sx = -1, 1, 2 do
-				for sy = -1, 1, 2 do
-					for sz = -1, 1, 2 do
-						local c = (cf * CFrame.new(sx * half.X, sy * half.Y, sz * half.Z)).Position
-						if not min then
-							min, max = c, c
-						else
-							min = Vector3.new(math.min(min.X, c.X), math.min(min.Y, c.Y), math.min(min.Z, c.Z))
-							max = Vector3.new(math.max(max.X, c.X), math.max(max.Y, c.Y), math.max(max.Z, c.Z))
-						end
-					end
-				end
-			end
+			local vol = d.Size.X * d.Size.Y * d.Size.Z
+			sum += d.Position * vol
+			totalVol += vol
 		end
 	end
-	if not min or not max then
+	if totalVol <= 0 then
 		return nil
 	end
-	-- center of the visible AABB (X/Y/Z midpoints)
-	return Vector3.new((min.X + max.X) / 2, (min.Y + max.Y) / 2, (min.Z + max.Z) / 2)
+	return sum / totalVol
 end
 
 -- Weld every BasePart of `model` to `handle`, after making them unanchored/massless/non-collide.
--- The model is moved so its VISIBLE-geometry CENTER sits at the handle position (NOT its off-center
--- invisible RootPart pivot). At ~average-character size the centred model holds at the avatar's body
--- height — its bottom stays above the feet (no floor clip) and it doesn't tower above the head the
--- way a bottom-at-hand offset did.
+-- The model is re-oriented 180° about the vertical axis through its grip point so the brainrot faces
+-- AWAY from the player (we see its back, like it's held out facing forward), and its grip point — the
+-- bulk centroid (visibleGrip) — is moved onto the handle so every brainrot is carried from the MIDDLE
+-- of its body, at the avatar's body height (bottom stays above the feet, so no floor clip).
 local function weldModelToHandle(model: Model, handle: Part)
-	local center = visibleCenter(model)
-	if center then
-		-- translate the whole model so its visible center lands on the handle position (a pure
-		-- world-space shift; orientation is preserved).
-		local delta = handle.Position - center
-		model:PivotTo(model:GetPivot() + delta)
+	local grip = visibleGrip(model)
+	if grip then
+		-- M maps the grip point onto the handle and yaws the model 180° about the vertical axis through
+		-- the grip: for any world point x, x -> handle.Position + Rot180Y * (x - grip).
+		local M = CFrame.new(handle.Position) * CFrame.Angles(0, math.pi, 0) * CFrame.new(-grip)
+		model:PivotTo(M * model:GetPivot())
 	else
 		model:PivotTo(handle.CFrame) -- nothing visible (shouldn't happen): fall back to the pivot.
 	end
@@ -131,7 +118,11 @@ function ToolFactory.buildEggTool(rarity: string): Tool
 	-- so the silhouette matches. PixelEgg builds an ANCHORED model centred at the given point (here
 	-- the handle), so we weld each cube to the handle and drop the transparent EggCore.
 	local color = RarityColors.tier(rarity)
-	local egg = PixelEgg.build(handle.Position, EggConfig.displayHeight(rarity), color, EggConfig.ToolVoxH)
+	local height = EggConfig.displayHeight(rarity)
+	-- Build the egg so its BOTTOM edge sits at the handle (offset the centre up by half the height):
+	-- the hand then grips the BOTTOM of the egg so it reads as HELD, instead of being skewered through
+	-- the centre (which clipped the egg into the player's arm).
+	local egg = PixelEgg.build(handle.Position + Vector3.new(0, height / 2, 0), height, color, EggConfig.ToolVoxH)
 	for _, d in ipairs(egg:GetChildren()) do
 		if d:IsA("BasePart") and d.Name ~= "EggCore" then
 			d.Parent = tool
