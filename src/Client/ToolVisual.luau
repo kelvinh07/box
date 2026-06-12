@@ -197,6 +197,94 @@ function ToolVisual.mountBrainrot(vf: ViewportFrame, id: string)
 	end)
 end
 
+----------------------------------------------------------------- dex preview (any brainrot+variant)
+-- The Collection "dex" needs to render EVERY brainrot — even ones the player doesn't own — so it
+-- can't use the owned-source lookup above. Instead it clones the read-only base model the server
+-- exposes in ReplicatedStorage.BrainrotModels and applies the look itself: a flat BLACK silhouette
+-- when LOCKED, else the variant recolor (Gold metal / Diamond cyan-glass / Galaxy purple-glass;
+-- Normal keeps its real textures) — mirroring BrainrotFactory.recolorVariant.
+local VARIANT_MATERIAL = {
+	Gold = Enum.Material.Metal,
+	Diamond = Enum.Material.Glass,
+	Galaxy = Enum.Material.Glass,
+}
+local SILHOUETTE = Color3.fromRGB(18, 18, 24)
+
+local function previewSource(base: string): Model?
+	local folder = ReplicatedStorage:FindFirstChild("BrainrotModels")
+	local m = folder and folder:FindFirstChild(base)
+	return (m and m:IsA("Model")) and m or nil
+end
+
+-- Render a brainrot (by base name + variant) into the viewport. `locked` => black silhouette.
+-- Returns false (so a retry can fire) until ReplicatedStorage.BrainrotModels has replicated in.
+function ToolVisual.renderBrainrotPreview(vf: ViewportFrame, base: string, variant: string, locked: boolean): boolean
+	for _, c in ipairs(vf:GetChildren()) do
+		c:Destroy()
+	end
+	vf.CurrentCamera = nil
+
+	local src = previewSource(base)
+	if not src then
+		return false
+	end
+	local holder = Instance.new("Model")
+	local clone = src:Clone()
+	clone.Parent = holder
+
+	for _, d in ipairs(holder:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency < 0.95 and d.Name ~= "RootPart" then
+			if locked then
+				d.Color = SILHOUETTE
+				d.Material = Enum.Material.SmoothPlastic
+				if d:IsA("MeshPart") then
+					d.TextureID = ""
+				end
+				local sa = d:FindFirstChildWhichIsA("SurfaceAppearance")
+				if sa then sa:Destroy() end
+			elseif variant ~= "Normal" then
+				d.Color = RarityColors.variant(variant)
+				local mat = VARIANT_MATERIAL[variant]
+				if mat then d.Material = mat end
+				if d:IsA("MeshPart") then
+					d.TextureID = ""
+				end
+				local sa = d:FindFirstChildWhichIsA("SurfaceAppearance")
+				if sa then sa:Destroy() end
+			end
+		end
+	end
+
+	-- guard against an EMPTY clone (parts not replicated yet): no visible geometry -> retry.
+	local _, size = computeBounds(holder)
+	if math.max(size.X, size.Y, size.Z) <= 0 then
+		holder:Destroy()
+		return false
+	end
+
+	ToolVisual.frame(vf, holder)
+	return true
+end
+
+-- Fire-and-forget retry wrapper (same pattern as mountBrainrot): render now; if the source model
+-- isn't replicated yet, spin a short retry loop into the SAME viewport.
+function ToolVisual.mountBrainrotPreview(vf: ViewportFrame, base: string, variant: string, locked: boolean)
+	if ToolVisual.renderBrainrotPreview(vf, base, variant, locked) then
+		return
+	end
+	task.spawn(function()
+		for _ = 1, 16 do
+			task.wait(0.25)
+			if vf.Parent == nil then
+				return
+			end
+			if ToolVisual.renderBrainrotPreview(vf, base, variant, locked) then
+				return
+			end
+		end
+	end)
+end
+
 ----------------------------------------------------------------- dispatch
 -- Dispatch a real Tool to the right renderer by its "Kind" attribute. Returns false only for the
 -- brainrot path when the source model hasn't replicated yet (eggs always succeed).

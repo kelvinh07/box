@@ -1363,44 +1363,68 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 		solidFloor = Palette.CavernFloor -- #1B3444 dark cavern floor (glowing decor pops against it)
 	elseif theme == "CherryBlossom" then
 		solidFloor = Palette.CherryFloor -- solid PINK floor; the petal carpet adds texture on top
-	end
-
-	-- floor border: solid-floor zones get a big segment-filling slab of their colour; grass/forest
-	-- get a small GREEN frame tagged GrassSurface (client overlays the two-green checker).
-	local borderSize = solidFloor
-		and Vector3.new(2 * LANE_SIDE_INNER_X + 2, 0.6, LANE_STEP - 4) -- fill the lane segment, edge-to-edge
-		or (seg + Vector3.new(12, -0.4, 12))
-	local zoneBorder = makePart({
-		Name = "ZoneBorder",
-		Size = borderSize,
-		Color = solidFloor or Palette.Grass,
-		CFrame = CFrame.new(pos.X, LANE_SEG_Y - 0.2, pos.Z) * rot,
-		Parent = parent,
-	})
-	if not solidFloor then
-		CollectionService:AddTag(zoneBorder, "GrassSurface")
+	elseif theme == "Haunted" then
+		solidFloor = Palette.HauntedFloor -- #6B5D2F murky olive graveyard floor (zone 7)
 	end
 
 	-- Dig plate colour: FOREST = grassy clearing, solid-floor zones = their sand/ice colour, else =
 	-- dark brown earth (darker than the tan client mounds). The client scatters tan dirt mounds on top.
 	local digColor = (isGrassy and Palette.Grass) or solidFloor or Palette.DigField
-	local dirt = makePart({
-		Name = ("Zone%dDig"):format(zone),
-		Size = seg,
-		Color = digColor,
-		CFrame = CFrame.new(pos.X, LANE_SEG_Y, pos.Z) * rot,
-		Parent = parent,
-	})
-	CollectionService:AddTag(dirt, "DigPatch")
-	dirt:SetAttribute("Zone", zone)
-	-- the client scatters dig mounds only within +/-DigHalf of the centre (not the full slab),
-	-- so the expanded outer rim stays clear for grass / sand + sprinkled decor.
-	dirt:SetAttribute("DigHalf", digHalf)
-	if isGrassy then
-		-- match the surrounding grass: studded + the 6x6 two-green checker overlay
-		CollectionService:AddTag(dirt, "GrassSurface")
+
+	if zone == 1 then
+		-- LOBBY (zone 1): KEEP the original framed dig plate — a SEG_SIZE pad sitting in the lobby
+		-- grass with a slightly-larger grass frame under it (the lobby has shops / spawn / a path
+		-- around it, so the dig site stays a defined pad here, not the whole open lobby).
+		local borderSize = solidFloor
+			and Vector3.new(2 * LANE_SIDE_INNER_X + 2, 0.6, LANE_STEP - 4)
+			or (seg + Vector3.new(12, -0.4, 12))
+		local zoneBorder = makePart({
+			Name = "ZoneBorder",
+			Size = borderSize,
+			Color = solidFloor or Palette.Grass,
+			CFrame = CFrame.new(pos.X, LANE_SEG_Y - 0.2, pos.Z) * rot,
+			Parent = parent,
+		})
+		if not solidFloor then
+			CollectionService:AddTag(zoneBorder, "GrassSurface")
+		end
+		local dirt = makePart({
+			Name = ("Zone%dDig"):format(zone),
+			Size = seg,
+			Color = digColor,
+			CFrame = CFrame.new(pos.X, LANE_SEG_Y, pos.Z) * rot,
+			Parent = parent,
+		})
+		CollectionService:AddTag(dirt, "DigPatch")
+		dirt:SetAttribute("Zone", zone)
+		dirt:SetAttribute("DigHalf", digHalf)
+		if isGrassy then
+			CollectionService:AddTag(dirt, "GrassSurface")
+		end
+	else
+		-- ZONES 2+: the WHOLE zone is ONE uniform floor AND the dig site — a single slab spanning
+		-- cliff-to-cliff (±LANE_SIDE_INNER_X) and wall-to-wall (LANE_STEP), at one level. There is no
+		-- separate raised "dig square" any more: the client (DigSite.scatterPatch) scatters mounds
+		-- across the ENTIRE slab and simply avoids decoration via the DigExclusion markers. This is
+		-- why every themed decoration that stands on the floor now drops a no-dig marker.
+		local floorSize = Vector3.new(2 * LANE_SIDE_INNER_X + 2, SEG_SIZE.Y, LANE_STEP - 4)
+		local dirt = makePart({
+			Name = ("Zone%dDig"):format(zone),
+			Size = floorSize,
+			Color = digColor,
+			CFrame = CFrame.new(pos.X, LANE_SEG_Y, pos.Z) * rot,
+			Parent = parent,
+		})
+		CollectionService:AddTag(dirt, "DigPatch")
+		dirt:SetAttribute("Zone", zone)
+		-- LEGACY: DigHalf used to bound the mound core; the whole slab is diggable now (kept for back-compat).
+		dirt:SetAttribute("DigHalf", digHalf)
+		if isGrassy then
+			-- match the surrounding grass: studded + the 6x6 two-green checker overlay
+			CollectionService:AddTag(dirt, "GrassSurface")
+		end
+		-- solid-floor zones (Desert / Glaciers / Cavern / Cherry) leave the floor a flat colour (no checker)
 	end
-	-- solid-floor zones (Desert / The Glaziers) leave the dig plate a flat colour (no checker)
 
 	local signPart = makePart({
 		Name = "ZoneSign",
@@ -2214,56 +2238,10 @@ local function placeTree(x: number, z: number, targetH: number, parent: Instance
 	tree.Parent = parent
 end
 
--- a FEW small trees sprinkled INSIDE the forest dig clearing's grassy rim, placed in a ring
--- at radius `RING` so they sit OUTSIDE the central +/-40 mound core (never on a dig spot).
--- Non-collidable so they never block the player running between dig mounds.
-local function buildForestClearingTrees(centerZ: number)
-	local cx = MapBuilder.DigCenter.X
-	local RING = 54 -- > DigHalf(40) + canopy, < dig slab half(60) — clears the mounds, stays on the clearing
-	-- corner + a couple edge anchors (unit offsets); jitter is tiny so none drift onto the core
-	local spots = {
-		{ 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }, -- 4 corners
-		{ 1, 0.2 }, { -1, -0.2 },                    -- 2 edge-ish (sprinkle)
-	}
-	for _, s in ipairs(spots) do
-		local x = cx + s[1] * RING + (decorRng:NextNumber() - 0.5) * 4
-		local z = centerZ + s[2] * RING + (decorRng:NextNumber() - 0.5) * 4
-		placeTree(x, z, decorRng:NextInteger(13, 18) + decorRng:NextNumber(), laneFolder, false)
-	end
-end
-
--- scatter trees in the LEFT and RIGHT strips flanking a Forest dig site, within the
--- z range between its walls and clear of the 96-wide dig square. NEVER on the lane.
-local function buildForestTrees(zLo: number, zHi: number)
-	local cx = MapBuilder.DigCenter.X
-	local innerX = SEG_SIZE.X / 2 + 6 -- = 66, just clear of the dig square
-	local outerX = innerX + 18        -- thin strip; trees stay INSIDE the compacted lane wall (cap inner ~x98) — no overlap
-	local step = 16
-	for _, sign in ipairs({ -1, 1 }) do
-		local gx = innerX
-		while gx <= outerX do
-			local gz = zLo
-			while gz <= zHi do
-				if decorRng:NextNumber() < 0.7 then -- gaps => natural forest edge
-					local x = cx + sign * (gx + (decorRng:NextNumber() - 0.5) * step * 0.8)
-					local z = gz + (decorRng:NextNumber() - 0.5) * step * 0.8
-					placeTree(x, z, decorRng:NextInteger(12, 18) + decorRng:NextNumber(), laneFolder)
-				end
-				gz = gz + step
-			end
-			gx = gx + step
-		end
-	end
-end
-
-------------------------------------------------------------- forest ground cover
--- A FEW small trees standing INSIDE the dig clearing core (within the +/-DigHalf region
--- where mounds spawn). Each gets an INVISIBLE no-dig marker (tagged DigExclusion, with a
--- ClearRadius + Zone) so the client (DigSite.scatterPatch) never drops a dirt mound on/near
--- the tree. NON-collidable so a tree standing among the mounds never traps a digging player.
-local DIG_EXCLUSION_TAG = "DigExclusion"
 -- Drop an INVISIBLE "no-dig" marker at (x,z): the client (DigSite.scatterPatch) never scatters a
 -- dirt mound within `radius` of it, so eggs never spawn on top of digsite decor (trees/cacti/rocks).
+-- Defined HERE (above the forest tree builders) so every decoration builder can mark its footprint.
+local DIG_EXCLUSION_TAG = "DigExclusion"
 local function addDigExclusion(x: number, z: number, radius: number, zone: number)
 	local marker = makePart({
 		Name = "DigExclusion",
@@ -2280,9 +2258,58 @@ local function addDigExclusion(x: number, z: number, radius: number, zone: numbe
 	CollectionService:AddTag(marker, DIG_EXCLUSION_TAG)
 end
 
+-- a FEW small trees sprinkled in the forest dig clearing's grassy rim, placed in a ring at radius
+-- `RING`. The whole zone is diggable, so each is ringed by a no-dig exclusion so mounds never spawn
+-- on them. Non-collidable so they never block the player running between mounds.
+local function buildForestClearingTrees(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local RING = 54 -- mid-zone ring between the centre and the side tree strips
+	-- corner + a couple edge anchors (unit offsets); jitter is tiny so none drift far
+	local spots = {
+		{ 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }, -- 4 corners
+		{ 1, 0.2 }, { -1, -0.2 },                    -- 2 edge-ish (sprinkle)
+	}
+	for _, s in ipairs(spots) do
+		local x = cx + s[1] * RING + (decorRng:NextNumber() - 0.5) * 4
+		local z = centerZ + s[2] * RING + (decorRng:NextNumber() - 0.5) * 4
+		placeTree(x, z, decorRng:NextInteger(13, 18) + decorRng:NextNumber(), laneFolder, false)
+		addDigExclusion(x, z, 11, zone)
+	end
+end
+
+-- scatter trees in the LEFT and RIGHT strips flanking a Forest zone (between the central dig area
+-- and the border cliffs). The whole zone is diggable now, so each SOLID tree drops a no-dig marker
+-- so a mound never spawns under its trunk. NEVER on the lane.
+local function buildForestTrees(zone: number, zLo: number, zHi: number)
+	local cx = MapBuilder.DigCenter.X
+	local innerX = SEG_SIZE.X / 2 + 6 -- = 66: the side tree strip starts here
+	local outerX = innerX + 18        -- thin strip; trees stay INSIDE the compacted lane wall (cap inner ~x98)
+	local step = 16
+	for _, sign in ipairs({ -1, 1 }) do
+		local gx = innerX
+		while gx <= outerX do
+			local gz = zLo
+			while gz <= zHi do
+				if decorRng:NextNumber() < 0.7 then -- gaps => natural forest edge
+					local x = cx + sign * (gx + (decorRng:NextNumber() - 0.5) * step * 0.8)
+					local z = gz + (decorRng:NextNumber() - 0.5) * step * 0.8
+					placeTree(x, z, decorRng:NextInteger(12, 18) + decorRng:NextNumber(), laneFolder)
+					addDigExclusion(x, z, 10, zone) -- keep mounds off the solid trunks
+				end
+				gz = gz + step
+			end
+			gx = gx + step
+		end
+	end
+end
+
+------------------------------------------------------------- forest ground cover
+-- A FEW small trees standing among the dig mounds. Each gets an INVISIBLE no-dig marker (tagged
+-- DigExclusion, with a ClearRadius + Zone) so the client (DigSite.scatterPatch) never drops a dirt
+-- mound on/near the tree. NON-collidable so a tree among the mounds never traps a digging player.
 local function buildForestDigsiteTrees(zone: number, centerZ: number)
 	local cx = MapBuilder.DigCenter.X
-	-- offsets INSIDE the +/-DigHalf(40) mound core, spread so they don't clump at the centre
+	-- offsets spread around the central area, kept from clumping at the centre
 	local spots = { { 21, 13 }, { -17, 23 }, { 24, -19 }, { -23, -15 } }
 	for _, s in ipairs(spots) do
 		local x = cx + s[1] + (decorRng:NextNumber() - 0.5) * 6
@@ -2460,13 +2487,15 @@ end
 local function buildDesertDigsiteDecor(zone: number, centerZ: number)
 	local cx = MapBuilder.DigCenter.X
 	local surfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2 -- top of the dig plate
-	local SPREAD = 46                            -- stay inside the dig square (~+/-60)
+	-- spread the decor across the WHOLE zone now (clear of the side cliffs + the rebirth walls)
+	local SPREAD_X = LANE_SIDE_INNER_X - 14 -- ~86: across the lane width, off the cliffs
+	local SPREAD_Z = LANE_STEP / 2 - 16     -- ~58: down the zone, off the walls
 	local placed: { { x: number, z: number } } = {}
 	-- pick a scattered (x,z) at least `gap` from already-placed decor; nil if it can't after tries
 	local function pick(gap: number): (number?, number?)
-		for _ = 1, 14 do
-			local x = cx + (decorRng:NextNumber() - 0.5) * 2 * SPREAD
-			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * SPREAD
+		for _ = 1, 16 do
+			local x = cx + (decorRng:NextNumber() - 0.5) * 2 * SPREAD_X
+			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * SPREAD_Z
 			local ok = true
 			for _, p in ipairs(placed) do
 				if (x - p.x) ^ 2 + (z - p.z) ^ 2 < gap * gap then
@@ -2481,15 +2510,15 @@ local function buildDesertDigsiteDecor(zone: number, centerZ: number)
 		end
 		return nil, nil
 	end
-	for _ = 1, 6 do -- cacti (different heights, scattered)
-		local x, z = pick(16)
+	for _ = 1, 11 do -- cacti (different heights, scattered across the zone)
+		local x, z = pick(18)
 		if x and z then
 			buildCactus(x, z, surfaceY)
 			addDigExclusion(x, z, 11, zone)
 		end
 	end
-	for _ = 1, 3 do -- 2-3 desert rocks
-		local x, z = pick(16)
+	for _ = 1, 5 do -- a few desert rocks
+		local x, z = pick(18)
 		if x and z then
 			local s = buildDesertRock(x, z, surfaceY)
 			addDigExclusion(x, z, math.max(10, s / 2 + 5), zone)
@@ -2571,12 +2600,14 @@ end
 local function buildGlacierDigsiteDecor(zone: number, centerZ: number)
 	local cx = MapBuilder.DigCenter.X
 	local surfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2 -- top of the dig plate
-	local SPREAD = 48
+	-- spread the decor across the WHOLE zone now (clear of the side cliffs + the rebirth walls)
+	local SPREAD_X = LANE_SIDE_INNER_X - 14 -- ~86: across the lane width, off the cliffs
+	local SPREAD_Z = LANE_STEP / 2 - 16     -- ~58: down the zone, off the walls
 	local placed: { { x: number, z: number } } = {}
 	local function pick(gap: number): (number?, number?)
-		for _ = 1, 14 do
-			local x = cx + (decorRng:NextNumber() - 0.5) * 2 * SPREAD
-			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * SPREAD
+		for _ = 1, 16 do
+			local x = cx + (decorRng:NextNumber() - 0.5) * 2 * SPREAD_X
+			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * SPREAD_Z
 			local ok = true
 			for _, p in ipairs(placed) do
 				if (x - p.x) ^ 2 + (z - p.z) ^ 2 < gap * gap then
@@ -2591,14 +2622,14 @@ local function buildGlacierDigsiteDecor(zone: number, centerZ: number)
 		end
 		return nil, nil
 	end
-	for _ = 1, 9 do -- ice spikes (different heights, scattered)
-		local x, z = pick(13)
+	for _ = 1, 14 do -- ice spikes (different heights, scattered across the zone)
+		local x, z = pick(14)
 		if x and z then
 			local baseW = buildIceSpike(x, z, surfaceY)
 			addDigExclusion(x, z, math.max(8, baseW / 2 + 5), zone)
 		end
 	end
-	local px, pz = pick(13) -- one small penguin
+	local px, pz = pick(14) -- one small penguin
 	if px and pz then
 		buildPenguin(px, pz, surfaceY)
 		addDigExclusion(px, pz, 6, zone)
@@ -3156,6 +3187,7 @@ local function buildCherryBlossomDecor(zone: number, centerZ: number)
 			if math.abs(x - cx) < halfX and math.abs(z - centerZ) < halfZ and farEnough(x, z, 34) then
 				placed[#placed + 1] = { x = x, z = z }
 				placeCherryTree(x, z, surfaceYAt(x, z), 1.45)
+				addDigExclusion(x, z, 18, zone) -- whole slab is diggable now → keep mounds off the trunk
 				break
 			end
 		end
@@ -3170,6 +3202,264 @@ local function buildCherryBlossomDecor(zone: number, centerZ: number)
 	-- 3) WOOD-PLANK border walls + protruding planks with dim red lanterns (3 per side)
 	buildCherryWoodWalls(centerZ)
 	buildCherryPlankLanterns(centerZ)
+end
+
+------------------------------------------------------------- HAUNTED HOLLOW (zone 7)
+-- a bare, gnarled DEAD TREE: a leaf-less grey-brown trunk with a few crooked branches forking up
+-- and out. NON-collidable (like the other digsite decor) so it never traps a digging player.
+local function buildDeadTree(x: number, z: number, surfaceY: number)
+	local model = Instance.new("Model")
+	model.Name = "DeadTree"
+	local h = decorRng:NextInteger(12, 18) + decorRng:NextNumber()
+	local tw = 1.5 + decorRng:NextNumber() * 0.9
+	local trunk = makePart({
+		Name = "DeadTrunk",
+		Size = Vector3.new(tw, h, tw),
+		Color = jitterColor(Palette.DeadWood, 0.06),
+		CanCollide = false,
+		CastShadow = false,
+		CFrame = CFrame.new(x, surfaceY + h / 2, z) * CFrame.Angles(math.rad(decorRng:NextInteger(-4, 4)), 0, math.rad(decorRng:NextInteger(-4, 4))),
+		Parent = model,
+	})
+	model.PrimaryPart = trunk
+	-- one crooked branch (+ a chance of a smaller fork at its tip) growing from a point up the trunk
+	local function branch(bp: Vector3, dir: Vector3, len: number, w: number)
+		local center = bp + dir * (len / 2)
+		makePart({
+			Name = "DeadBranch",
+			Size = Vector3.new(w, w, len * 1.03),
+			Color = jitterColor(Palette.DeadWood, 0.05),
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = CFrame.lookAt(center, bp + dir),
+			Parent = model,
+		})
+	end
+	for _ = 1, decorRng:NextInteger(4, 6) do
+		local yaw = decorRng:NextNumber() * math.pi * 2
+		local tilt = math.rad(decorRng:NextInteger(34, 62)) -- up from horizontal (reaching skyward)
+		local dir = Vector3.new(math.cos(yaw) * math.cos(tilt), math.sin(tilt), math.sin(yaw) * math.cos(tilt))
+		local bp = Vector3.new(x, surfaceY + h * (0.5 + decorRng:NextNumber() * 0.45), z)
+		local len = 4 + decorRng:NextNumber() * 4
+		local w = 0.6 + decorRng:NextNumber() * 0.5
+		branch(bp, dir, len, w)
+		if decorRng:NextNumber() < 0.6 then -- a smaller twig forking off the branch tip
+			local tip = bp + dir * len
+			local yaw2 = yaw + (decorRng:NextNumber() - 0.5) * 1.5
+			local tilt2 = tilt + math.rad(decorRng:NextInteger(-12, 22))
+			local dir2 = Vector3.new(math.cos(yaw2) * math.cos(tilt2), math.sin(tilt2), math.sin(yaw2) * math.cos(tilt2))
+			branch(tip, dir2, 2.5 + decorRng:NextNumber() * 2.5, w * 0.7)
+		end
+	end
+	model.Parent = laneFolder
+end
+
+-- one carved JACK-O'-LANTERN with a GLOWING face. `expr` (1/2/3) picks a different expression:
+-- 1 = classic toothy grin, 2 = angry slanted eyes, 3 = surprised round "O". Non-collidable.
+local function buildJackOLantern(x: number, z: number, surfaceY: number, expr: number)
+	local model = Instance.new("Model")
+	model.Name = "JackOLantern"
+	local w = 9 + decorRng:NextNumber() * 3 -- 9-12 wide (big, chunky pumpkin)
+	local bodyH = w * 0.82
+	local depth = w * 0.9
+	local r = w * 0.14 -- vertical-edge rounding radius (makes it a SEMI-rectangular rounded box)
+	-- mostly face the lobby (-Z, the way the player walks in) with a little random yaw
+	local base = CFrame.new(x, surfaceY + bodyH / 2, z) * CFrame.Angles(0, math.rad(decorRng:NextInteger(-20, 20)), 0)
+	local pumpkinColor = jitterColor(Palette.Pumpkin, 0.04)
+	local function bodyPart(size: Vector3, cf: CFrame, color: Color3?): BasePart
+		return makePart({
+			Name = "Pumpkin", NoStuds = true, Size = size, Color = color or pumpkinColor,
+			CanCollide = false, CastShadow = false, CFrame = cf, Parent = model,
+		})
+	end
+	-- SEMI-RECTANGULAR body: a squat ROUNDED BOX (two crossed slabs + 4 vertical corner cylinders).
+	-- The crucial part is the FLAT FRONT face — so the carved face sits flush IN it (a sphere made the
+	-- features float off the curving surface). Front face = the wide slab's -Z face at z = -depth/2.
+	local body = bodyPart(Vector3.new(w - 2 * r, bodyH, depth), base) -- spans the FLAT front
+	model.PrimaryPart = body
+	bodyPart(Vector3.new(w, bodyH, depth - 2 * r), base) -- spans the full width (rounds front/back edges)
+	for _, sx in ipairs({ -1, 1 }) do
+		for _, sz in ipairs({ -1, 1 }) do
+			makePart({
+				Name = "Pumpkin", Shape = Enum.PartType.Cylinder, NoStuds = true,
+				Size = Vector3.new(bodyH, 2 * r, 2 * r), Color = pumpkinColor,
+				CanCollide = false, CastShadow = false,
+				CFrame = base * CFrame.new(sx * (w / 2 - r), 0, sz * (depth / 2 - r)) * CFrame.Angles(0, 0, math.rad(90)),
+				Parent = model,
+			})
+		end
+	end
+	-- pumpkin RIBS: a couple of darker vertical grooves flanking the face (sells the pumpkin shape)
+	local ribColor = jitterColor(Palette.Pumpkin:Lerp(Color3.new(0, 0, 0), 0.2), 0.03)
+	for _, rs in ipairs({ -1, 1 }) do
+		bodyPart(Vector3.new(0.55, bodyH * 0.96, 0.7), base * CFrame.new(rs * (w / 2 - r - 0.4), 0, -depth / 2 - 0.05), ribColor)
+	end
+	-- a short crooked stem on top
+	makePart({
+		Name = "Stem",
+		NoStuds = true,
+		Size = Vector3.new(w * 0.15, w * 0.4, w * 0.15),
+		Color = jitterColor(Palette.DeadWood, 0.05),
+		CanCollide = false,
+		CastShadow = false,
+		CFrame = base * CFrame.new(0, bodyH / 2, 0) * CFrame.Angles(math.rad(10), 0, math.rad(7)),
+		Parent = model,
+	})
+	-- GLOWING face CARVED INTO the FLAT FRONT: every feature sits flush in the front face (all at the
+	-- same z = -depth/2, body sunk inward) so they read as glowing cut-outs, never floating blocks.
+	-- `s` scales the face layout to the pumpkin size.
+	local GLOW = Color3.fromRGB(255, 214, 90)
+	local frontZ = -depth / 2
+	local s = w / 6 -- face layout scale (the literals below are tuned at w≈6)
+	local function face(lx: number, ly: number, sx: number, sy: number, roll: number, ball: boolean?)
+		lx, ly, sx, sy = lx * s, ly * s, sx * s, sy * s
+		local thick = 1.2
+		local cz = frontZ - 0.06 + thick / 2 -- outer face 0.06 proud of the flat front, body sunk inward
+		makePart({
+			Name = "Face",
+			Shape = ball and Enum.PartType.Ball or Enum.PartType.Block,
+			NoStuds = true,
+			Size = Vector3.new(sx, sy, thick),
+			Color = GLOW,
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = base * CFrame.new(lx, ly, cz) * CFrame.Angles(0, 0, math.rad(roll)),
+			Parent = model,
+		})
+	end
+	-- a jagged toothy grin: a row of neon teeth across, with alternating heights
+	local function grin(yMid: number, span: number, n: number)
+		for i = 1, n do
+			local t = (i - 0.5) / n
+			local lx = -span / 2 + t * span
+			local th = 0.7 + ((i % 2 == 0) and 0.5 or 0.0)
+			face(lx, yMid + ((i % 2 == 0) and -0.1 or 0.15), 0.55, th, 0)
+		end
+	end
+	if expr == 2 then
+		-- ANGRY: slanted brows-down eyes + a small clenched grin
+		face(-1.25, 0.7, 1.7, 0.95, 28)
+		face(1.25, 0.7, 1.7, 0.95, -28)
+		face(0, 0.05, 0.7, 0.7, 45) -- diamond nose
+		grin(-1.05, 3.0, 5)
+	elseif expr == 3 then
+		-- SURPRISED: round eyes + a round "O" mouth
+		face(-1.2, 0.75, 1.2, 1.2, 0, true)
+		face(1.2, 0.75, 1.2, 1.2, 0, true)
+		face(0, 0.05, 0.55, 0.55, 0, true) -- round nose
+		face(0, -1.15, 1.7, 1.7, 0, true)  -- O mouth
+	else
+		-- CLASSIC: triangle-ish diamond eyes + diamond nose + a wide jagged grin
+		face(-1.2, 0.7, 1.35, 1.35, 45)
+		face(1.2, 0.7, 1.35, 1.35, 45)
+		face(0, 0.0, 0.8, 0.8, 45) -- diamond nose
+		grin(-1.1, 3.4, 6)
+	end
+	-- inner glow so the whole pumpkin glows from within (spooky)
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 150, 40)
+	light.Brightness = 2.4
+	light.Range = w + 6
+	light.Shadows = false
+	light.Parent = body
+	model.Parent = laneFolder
+end
+
+-- COBWEB STRINGS: pale silk strands strung in a sagging PARABOLA from the LEFT border cliff to the
+-- RIGHT border cliff (border-to-border), high overhead so they arch across the whole zone. A few at
+-- different depths/heights, with a couple of hanging droop strands for a tattered cobweb feel.
+local function buildCobwebStrands(centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local half = LANE_SIDE_INNER_X -- anchor into both cliff inner faces (±100)
+	-- one thin silk segment between two world points
+	local function strand(p1: Vector3, p2: Vector3, wdt: number)
+		local center = (p1 + p2) / 2
+		local len = (p2 - p1).Magnitude
+		makePart({
+			Name = "Cobweb",
+			NoStuds = true,
+			Material = Enum.Material.SmoothPlastic,
+			Size = Vector3.new(wdt, wdt, len),
+			Color = Palette.Web,
+			Transparency = 0.2,
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = CFrame.lookAt(center, p2),
+			Parent = laneFolder,
+		})
+	end
+	-- one sagging parabola at lane offset `dz`, top-anchored at `yTop`, dipping `sag` in the middle
+	local function parabola(dz: number, yTop: number, sag: number, wdt: number)
+		local SAMPLES = 16
+		local prev: Vector3? = nil
+		local pts: { Vector3 } = {}
+		for i = 0, SAMPLES do
+			local t = i / SAMPLES
+			local px = -half + t * 2 * half -- -half .. +half
+			local norm = px / half          -- -1 .. 1
+			local py = yTop - sag * (1 - norm * norm)
+			local pt = Vector3.new(cx + px, py, centerZ + dz)
+			pts[#pts + 1] = pt
+			if prev then
+				strand(prev, pt, wdt)
+			end
+			prev = pt
+		end
+		-- a couple of tattered droop strands hanging straight down from mid-span sample points
+		for _ = 1, 2 do
+			local p = pts[decorRng:NextInteger(6, 12)]
+			strand(p, p - Vector3.new(0, 3 + decorRng:NextNumber() * 4, 0), wdt * 0.85)
+		end
+	end
+	-- three strings down the zone at staggered heights so they read as separate cobwebs
+	parabola(-46, 28, 12, 0.35)
+	parabola(0, 34, 16, 0.4)
+	parabola(46, 26, 11, 0.35)
+end
+
+-- HAUNTED HOLLOW decor: dead trees + a few jack-o-lanterns scattered across the zone (each ringed by
+-- a no-dig marker), plus cobweb strings strung border-to-border overhead.
+local function buildHauntedDecor(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local surfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2 -- top of the (full-zone) floor
+	local SPREAD_X = LANE_SIDE_INNER_X - 14 -- ~86: across the lane width, off the cliffs
+	local SPREAD_Z = LANE_STEP / 2 - 16     -- ~58: down the zone, off the walls
+	local placed: { { x: number, z: number } } = {}
+	local function pick(gap: number): (number?, number?)
+		for _ = 1, 16 do
+			local x = cx + (decorRng:NextNumber() - 0.5) * 2 * SPREAD_X
+			local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * SPREAD_Z
+			local ok = true
+			for _, p in ipairs(placed) do
+				if (x - p.x) ^ 2 + (z - p.z) ^ 2 < gap * gap then
+					ok = false
+					break
+				end
+			end
+			if ok then
+				placed[#placed + 1] = { x = x, z = z }
+				return x, z
+			end
+		end
+		return nil, nil
+	end
+	for _ = 1, 8 do -- dead trees scattered around the zone
+		local x, z = pick(20)
+		if x and z then
+			buildDeadTree(x, z, surfaceY)
+			addDigExclusion(x, z, 9, zone)
+		end
+	end
+	for i = 1, 3 do -- 3 jack-o-lanterns (now bigger), each a different expression
+		local x, z = pick(24)
+		if x and z then
+			buildJackOLantern(x, z, surfaceY, i)
+			addDigExclusion(x, z, 10, zone)
+		end
+	end
+	-- cobweb strings strung in parabolas from border cliff to border cliff, overhead
+	buildCobwebStrands(centerZ)
 end
 
 	for k = 1, ZoneConfig.MaxZone - 1 do
@@ -3188,10 +3478,10 @@ end
 		local data = ZoneConfig.get(z)
 		if data and data.Theme == "Forest" then
 			local pz = LANE_START + (z - 1) * LANE_STEP
-			-- trees FLANKING the clearing (in the side strips, clear of the boundary fence)
-			buildForestTrees(pz - LANE_STEP / 2 + 30, pz + LANE_STEP / 2 - 14)
-			-- + a few trees sprinkled INSIDE the clearing's grassy rim (off the dig spots)
-			buildForestClearingTrees(pz)
+			-- trees FLANKING the dig area (in the side strips), each ringed by a no-dig exclusion
+			buildForestTrees(z, pz - LANE_STEP / 2 + 30, pz + LANE_STEP / 2 - 14)
+			-- + a few trees sprinkled in the clearing's grassy rim (also no-dig ringed)
+			buildForestClearingTrees(z, pz)
 			-- + a few trees standing INSIDE the digsite itself, each ringed by an invisible
 			--   no-dig zone so mounds never spawn on them
 			buildForestDigsiteTrees(z, pz)
@@ -3213,6 +3503,10 @@ end
 			-- CHERRY BLOSSOM: sakura trees (clear of mounds) + a pink-petal carpet + plank-hung
 			-- dim red lanterns on both border walls.
 			buildCherryBlossomDecor(z, LANE_START + (z - 1) * LANE_STEP)
+		elseif data and data.Theme == "Haunted" then
+			-- HAUNTED HOLLOW: dead trees + jack-o-lanterns scattered around the zone (no-dig ringed)
+			-- + cobweb strings strung border-to-border overhead in sagging parabolas.
+			buildHauntedDecor(z, LANE_START + (z - 1) * LANE_STEP)
 		end
 	end
 end

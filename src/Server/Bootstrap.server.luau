@@ -28,6 +28,29 @@ local Decoration = require(Managers.Decoration)
 -- 1. remotes
 Net.setupServer()
 
+-- 1.5. expose a READ-ONLY copy of the brainrot models to clients (ReplicatedStorage) so the
+-- Collection "dex" can render EVERY brainrot — owned or not — in a ViewportFrame. The authoritative
+-- models stay in ServerStorage; this copy is scripts-stripped + anchored and used for display only.
+local function exposeBrainrotPreviews()
+	local ServerStorage = game:GetService("ServerStorage")
+	local src = ServerStorage:FindFirstChild("BrainrotModels")
+	if not src or ReplicatedStorage:FindFirstChild("BrainrotModels") then
+		return
+	end
+	local copy = src:Clone()
+	copy.Name = "BrainrotModels"
+	for _, d in ipairs(copy:GetDescendants()) do
+		if d:IsA("LuaSourceContainer") then
+			d:Destroy() -- never ship scripts to the client
+		elseif d:IsA("BasePart") then
+			d.Anchored = true
+			d.CanCollide = false
+		end
+	end
+	copy.Parent = ReplicatedStorage
+end
+exposeBrainrotPreviews()
+
 -- 2. world
 MapBuilder.build()
 

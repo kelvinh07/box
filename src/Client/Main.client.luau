@@ -30,6 +30,7 @@ local Stands = require(UI.Stands)
 local CollectionButton = require(UI.CollectionButton)
 local RebirthButton = require(UI.RebirthButton)
 local Rebirth = require(UI.Rebirth)
+local Collection = require(UI.Collection)
 local LevelUp = require(UI.LevelUp)
 
 local player = Players.LocalPlayer
@@ -80,10 +81,12 @@ startSafe("ShopsButton", function() ShopsButton.build(screen) end)
 -- modal panels
 local rebirth
 startSafe("Rebirth", function() rebirth = Rebirth.build(screen) end)
+local collection
+startSafe("Collection", function() collection = Collection.build(screen) end)
 
--- left-side Collection icon (next to the 🎒 button) opens the inventory overlay on Brainrots
+-- left-side Collection icon (next to the 🎒 button) opens the brainrot DEX (pokédex of every variant)
 startSafe("CollectionButton", function()
-	CollectionButton.build(screen, function() if inventory then inventory.open("Brainrots") end end)
+	CollectionButton.build(screen, function() if collection then collection.open() end end)
 end)
 
 -- the three stand upgrade panels (opened by walking up to a stand, not the SideNav)

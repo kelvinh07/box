@@ -301,14 +301,17 @@ local function scatterPatch(patch: Instance)
 	else
 		area = patch.Size.X * patch.Size.Z
 	end
-	local count = math.clamp(math.floor(area / 300 + 0.5), 5, 14)
-
-	-- The slab may define a central DIG CORE (DigHalf): mounds scatter only within +/-DigHalf
-	-- of the centre, leaving the expanded outer rim clear for grass + sprinkled trees. Falls
-	-- back to the old "80% of the slab" spread when the attribute is absent.
-	local digHalf = patch:GetAttribute("DigHalf")
-	local spreadX = (typeof(digHalf) == "number" and digHalf * 2) or (patch.Size.X * 0.8)
-	local spreadZ = (typeof(digHalf) == "number" and digHalf * 2) or (patch.Size.Z * 0.8)
+	-- The WHOLE zone is the dig site now: for zones 2+ the slab spans the entire zone (cliff-to-cliff,
+	-- wall-to-wall), so mounds scatter across ALL of it (minus an edge inset that keeps them clear of
+	-- the border cliffs, rebirth walls + the wall rock piles) and simply AVOID decoration via the
+	-- DigExclusion markers gathered below. (The old central DigHalf core is gone — every part of the
+	-- zone is diggable; the DigHalf attribute is left set server-side but is no longer read.)
+	local EDGE_INSET = 16
+	local spreadX = math.max(patch.Size.X - EDGE_INSET * 2, 8)
+	local spreadZ = math.max(patch.Size.Z - EDGE_INSET * 2, 8)
+	-- mound count scales with the (now full-zone) area so the big field reads as a real dig site.
+	-- Capped at the server's MAX_ROLL_BATCH (30) — one RollEggs call assigns at most that many.
+	local count = math.clamp(math.floor(area / 600 + 0.5), 12, 30)
 
 	local zone = patch:GetAttribute("Zone") or 1
 

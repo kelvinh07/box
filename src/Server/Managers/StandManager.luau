@@ -67,7 +67,7 @@ local CORNER_FRAME_T = 1.6                        -- slender framing cross-secti
 local SHOP_ZONE_RADIUS = 16 -- interaction circle radius (visual ring + auto-open trigger)
 
 -- enclosing PLANK WALLS + a centred double-door opening in the FRONT (where the dirt path enters)
-local DOOR_HALF = 11   -- half-width of the front double-door opening (WIDER entry — 22 wide)
+local DOOR_HALF = 13   -- half-width of the front double-door opening (even wider — 26 wide)
 local DOOR_TOP = 18    -- top of the door opening; a plank header fills above it
 
 -- BROWN WOOD colours (Plastic material -> Surface.applyStuds gives the studs+inlets look)
@@ -326,16 +326,21 @@ end
 -- pillar; add 3 more FULL-SIZE (4x4, full-height) pillars inward to finish the square, then wrap a
 -- waist-high SOLID plank fence around all four sides. No roof (the main pavilion roof covers it).
 
--- A glowing WHITE interaction RING on the floor (Neon segments), marking the shop's auto-open zone.
+-- A glowing WHITE interaction RING on the floor (many TINY Neon segments), marking the auto-open zone.
+-- Each segment is oriented along the circle's TANGENT (via lookAt) and overlaps the next, so the line
+-- reads as a continuous smooth circle rather than dashes.
 local function buildShopRing(parent: Instance, cx: number, cz: number, radius: number)
 	local ring = Instance.new("Folder")
 	ring.Name = "ShopZoneRing"
 	ring.Parent = parent
-	local N = 48
-	local segLen = (2 * math.pi * radius) / N + 0.3 -- per-segment arc length + slight overlap
 	local y = FLOOR_TOP + 0.2
+	local circumference = 2 * math.pi * radius
+	local N = math.max(120, math.ceil(circumference / 0.7)) -- tiny segments, ~0.7 studs apart
+	local segLen = circumference / N + 0.5 -- generous overlap so there are NO gaps
 	for i = 0, N - 1 do
 		local a = (i / N) * math.pi * 2
+		local pos = Vector3.new(cx + math.cos(a) * radius, y, cz + math.sin(a) * radius)
+		local tangent = Vector3.new(-math.sin(a), 0, math.cos(a))
 		local seg = Instance.new("Part")
 		seg.Name = "RingSeg"
 		seg.Anchored = true
@@ -343,8 +348,8 @@ local function buildShopRing(parent: Instance, cx: number, cz: number, radius: n
 		seg.CastShadow = false
 		seg.Material = Enum.Material.Neon -- self-lit white = the "slight glow"
 		seg.Color = Color3.fromRGB(255, 255, 255)
-		seg.Size = Vector3.new(segLen, 0.25, 0.5)
-		seg.CFrame = CFrame.new(cx + math.cos(a) * radius, y, cz + math.sin(a) * radius) * CFrame.Angles(0, a + math.pi / 2, 0)
+		seg.Size = Vector3.new(0.5, 0.2, segLen) -- X=radial thickness, Z=length along the tangent
+		seg.CFrame = CFrame.lookAt(pos, pos + tangent)
 		seg.Parent = ring
 	end
 	return ring
@@ -395,7 +400,7 @@ local function buildCornerStall(parent: Instance, sign: number)
 		local hh = EAVE_Y - CORNER_WIN_TOP
 		for i = 0, n - 1 do
 			local tt = bl * (i + 0.5)
-			makePart({ Name = "ShopWall", Size = Vector3.new(1.5, hh, bl + 0.15), Color = (i % 2 == 0) and WOOD_MED or WOOD_DARK, CFrame = CFrame.new(x1 + ux * tt, CORNER_WIN_TOP + hh / 2, z1 + uz * tt) * CFrame.Angles(0, angle, 0), Parent = parent })
+			makePart({ Name = "ShopWall", Size = Vector3.new(1.5, hh, bl + 0.15), Color = WOOD_MED, CFrame = CFrame.new(x1 + ux * tt, CORNER_WIN_TOP + hh / 2, z1 + uz * tt) * CFrame.Angles(0, angle, 0), Parent = parent })
 		end
 	end
 	headerWall(ix, oz, ix, bz) -- inner side
@@ -420,7 +425,7 @@ local function plankRun(parent: Instance, ax: number, az: number, bx: number, bz
 	local h = y1 - y0
 	for i = 0, n - 1 do
 		local t = bl * (i + 0.5)
-		makePart({ Name = "ShopWall", Size = Vector3.new(1.5, h, bl + 0.15), Color = (i % 2 == 0) and WOOD_MED or WOOD_DARK, CFrame = CFrame.new(ax + ux * t, y0 + h / 2, az + uz * t) * CFrame.Angles(0, angle, 0), Parent = parent })
+		makePart({ Name = "ShopWall", Size = Vector3.new(1.5, h, bl + 0.15), Color = WOOD_MED, CFrame = CFrame.new(ax + ux * t, y0 + h / 2, az + uz * t) * CFrame.Angles(0, angle, 0), Parent = parent })
 	end
 end
 

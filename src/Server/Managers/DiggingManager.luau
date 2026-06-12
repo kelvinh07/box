@@ -38,7 +38,10 @@ local pending: { [Player]: { [string]: { rarity: string, zone: number } } } = {}
 local pendingCount: { [Player]: number } = {}
 local idCounter = 0
 
-local MAX_PENDING = 150           -- safety cap on un-dug assigned mounds
+-- Safety cap on un-dug assigned mounds PER PLAYER. The client pre-scatters every zone at join
+-- (up to MAX_ROLL_BATCH each), and the whole zone is now a dig site, so this must comfortably
+-- exceed MaxZone × MAX_ROLL_BATCH (8 × 30 = 240) or the deepest zones would get no eggs assigned.
+local MAX_PENDING = 320           -- safety cap on un-dug assigned mounds
 local MAX_ROLL_BATCH = 30         -- mounds per RollEggs call
 
 ----------------------------------------------------------------- proximity
@@ -82,13 +85,13 @@ local function luckyOdds(baseOdds: { [string]: number }, luck: number): { [strin
 	return out
 end
 
--- Roll a luck-weighted rarity using zone `effZone`'s DigOdds. `effZone` defaults to
--- the player's CurrentZone (used by the Dig regrow path, unchanged). RollEggs passes
--- the dig site's zone so digging at an unlocked higher-zone site uses its odds.
+-- Roll a luck-weighted rarity using zone `effZone`'s GENERATED dig odds (ZoneConfig.digOdds).
+-- `effZone` defaults to the player's CurrentZone (used by the Dig regrow path, unchanged).
+-- RollEggs passes the dig site's zone so digging at an unlocked higher-zone site uses its odds.
 local function rollRarity(profile: any, effZone: number?): string
-	local zone = ZoneConfig.get(effZone or profile.CurrentZone) or ZoneConfig.get(1)
+	local zone = effZone or profile.CurrentZone or 1
 	local luck = UpgradeConfig.totalLuck(profile.LuckLevel, profile.Rebirths)
-	return Util.weightedPick(luckyOdds(zone.DigOdds, luck)) or "Common"
+	return Util.weightedPick(luckyOdds(ZoneConfig.digOdds(zone), luck)) or "Common"
 end
 
 local function assign(player: Player, rarity: string, zone: number): string

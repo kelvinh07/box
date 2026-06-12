@@ -34,6 +34,11 @@ local Palette = {
 	-- CRYSTAL CAVERNS (zone 5) — dark blue-teal cave floor; glowing crystal/mushroom/grass decor pops against it
 	CavernFloor  = Color3.fromRGB(27, 52, 68),    -- #1B3444 dark cavern floor
 	CherryFloor  = Color3.fromRGB(236, 120, 178), -- CHERRY BLOSSOM (zone 6) solid pink floor under the petal carpet
+	-- HAUNTED HOLLOW (zone 7) — murky olive floor + dead trees, jack-o-lanterns, cobweb strings
+	HauntedFloor = Color3.fromRGB(107, 93, 47),   -- #6B5D2F murky olive-brown graveyard ground
+	DeadWood     = Color3.fromRGB(92, 78, 64),    -- bare grey-brown dead-tree bark
+	Pumpkin      = Color3.fromRGB(255, 124, 24),  -- vivid jack-o-lantern orange
+	Web          = Color3.fromRGB(224, 228, 234), -- pale cobweb silk
 	Incubator = Color3.fromRGB(72, 116, 245),   -- vivid blue incubator body
 	LockRed   = Color3.fromRGB(255, 58, 86),    -- vivid red (locked staircase barrier)
 	Pink      = Color3.fromRGB(255, 80, 175),

@@ -58,22 +58,27 @@ UpgradeConfig.Rebirth = {
 	-- LIFETIME cash required to PERFORM each rebirth, indexed by the rebirth NUMBER you are
 	-- working toward (1 = your first rebirth). LifetimeCash is CUMULATIVE and NEVER resets, so
 	-- each entry is the absolute total ever-earned cash needed to unlock that rebirth. Beyond
-	-- #12: previous * MilestoneGrowth (floored). Tuned STARTER values — edit freely.
+	-- #12: previous * MilestoneGrowth (floored).
+	--
+	-- RAISED (rebirth was coming too fast for how quickly cash is earned): the curve is ~3.3x
+	-- harder on the FIRST rebirth and ~2-2.5x harder on the rest, so even with fast income each
+	-- rebirth is a real goal instead of a sub-minute formality. Tune freely — this is the single
+	-- lever that paces rebirth (time-to-rebirth ≈ milestone / average income).
 	LifetimeMilestones = {
-		[1]  = 3600,
-		[2]  = 51800,
-		[3]  = 223900,
-		[4]  = 749800,
-		[5]  = 2220300,
-		[6]  = 6206400,
-		[7]  = 16574600,
-		[8]  = 42908700,
-		[9]  = 108603700,
-		[10] = 270201500,
-		[11] = 663221800,
-		[12] = 1610196300,
+		[1]  = 12000,
+		[2]  = 130000,
+		[3]  = 520000,
+		[4]  = 1650000,
+		[5]  = 4800000,
+		[6]  = 13000000,
+		[7]  = 34000000,
+		[8]  = 86000000,
+		[9]  = 215000000,
+		[10] = 530000000,
+		[11] = 1300000000,
+		[12] = 3150000000,
 	},
-	MilestoneGrowth = 2.4,
+	MilestoneGrowth = 2.5,
 }
 
 ------------------------------------------------------------------------- HELPERS
