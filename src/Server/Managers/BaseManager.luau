@@ -1349,6 +1349,9 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 
 	local theme = zoneData.Theme
 	local isForest = theme == "Forest"
+	-- grassy themes keep a green dig plate (mounds sit on grass). Cherry Blossom uses a solid PINK floor
+	-- (solidFloor below) with the petal carpet on top, so it is NOT grassy.
+	local isGrassy = isForest
 	-- Themes with a SOLID-colour floor that FILLS the whole lane segment (no checker): Desert (sand)
 	-- and The Glaziers (ice). nil for grass/forest zones (which keep the small green checker frame).
 	local solidFloor: Color3? = nil
@@ -1358,6 +1361,8 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 		solidFloor = Palette.Ice
 	elseif theme == "Cavern" then
 		solidFloor = Palette.CavernFloor -- #1B3444 dark cavern floor (glowing decor pops against it)
+	elseif theme == "CherryBlossom" then
+		solidFloor = Palette.CherryFloor -- solid PINK floor; the petal carpet adds texture on top
 	end
 
 	-- floor border: solid-floor zones get a big segment-filling slab of their colour; grass/forest
@@ -1378,7 +1383,7 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 
 	-- Dig plate colour: FOREST = grassy clearing, solid-floor zones = their sand/ice colour, else =
 	-- dark brown earth (darker than the tan client mounds). The client scatters tan dirt mounds on top.
-	local digColor = (isForest and Palette.Grass) or solidFloor or Palette.DigField
+	local digColor = (isGrassy and Palette.Grass) or solidFloor or Palette.DigField
 	local dirt = makePart({
 		Name = ("Zone%dDig"):format(zone),
 		Size = seg,
@@ -1391,7 +1396,7 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 	-- the client scatters dig mounds only within +/-DigHalf of the centre (not the full slab),
 	-- so the expanded outer rim stays clear for grass / sand + sprinkled decor.
 	dirt:SetAttribute("DigHalf", digHalf)
-	if isForest then
+	if isGrassy then
 		-- match the surrounding grass: studded + the 6x6 two-green checker overlay
 		CollectionService:AddTag(dirt, "GrassSurface")
 	end
@@ -1624,6 +1629,11 @@ local FENCE_VIS_H = 14      -- visible fence height
 local FENCE_BARRIER_H = 60  -- tall invisible anti-jump/glitch wall
 local FENCE_ASSET = 4831942116
 
+-- the LOBBY DIG-SITE broken fence is SHORTER than the lane fence (a low border, not a wall)
+-- and its FRONT run has a GAP where the shop's dirt path walks in.
+local DIG_FENCE_H = 8           -- shorter dig-site fence (vs FENCE_VIS_H=14)
+local DIG_FENCE_GAP_HALF = 9    -- half-width of the front-fence opening at the dig centre (path enters here)
+
 local fenceTemplate: Model? = nil
 local fenceTried = false
 local function getFenceTemplate(): Model?
@@ -1763,8 +1773,9 @@ end
 -- posts, LEANING posts (pivoting from the ground), broken-short tops, and GAPPY rails — so the
 -- dig site reads as a derelict / actively-excavated pit. Seeded RNG keeps the broken pattern
 -- stable across rebuilds. Local +Z is the run direction; non-collidable (decorative only).
-local function buildBrokenFence(baseCF: CFrame, length: number, parent: Instance, seed: number)
+local function buildBrokenFence(baseCF: CFrame, length: number, parent: Instance, seed: number, visH: number?)
 	local rng = Random.new(seed)
+	local H = visH or FENCE_VIS_H -- nominal post height for THIS fence
 	local POST_W, RAIL_W = 1.0, 0.5 -- thinner boards (the lane fence uses 1.8 / 0.9)
 	local n = math.max(2, math.floor(length / 5) + 1) -- a post roughly every 5 studs
 	local present, topH = {}, {}
@@ -1773,7 +1784,7 @@ local function buildBrokenFence(baseCF: CFrame, length: number, parent: Instance
 		present[i] = rng:NextNumber() > 0.18 -- ~18% of posts knocked out (gaps)
 		if present[i] then
 			local broken = rng:NextNumber() < 0.25 -- some snapped off short
-			local h = FENCE_VIS_H * (broken and (0.4 + rng:NextNumber() * 0.35) or (0.88 + rng:NextNumber() * 0.12))
+			local h = H * (broken and (0.4 + rng:NextNumber() * 0.35) or (0.88 + rng:NextNumber() * 0.12))
 			topH[i] = h
 			makePart({
 				Name = "DigFencePost",
@@ -1793,7 +1804,7 @@ local function buildBrokenFence(baseCF: CFrame, length: number, parent: Instance
 			if present[i] and present[i + 1] and rng:NextNumber() > 0.25 then -- ~25% of segments broken out
 				local z1 = -length / 2 + (i / (n - 1)) * length
 				local z2 = -length / 2 + ((i + 1) / (n - 1)) * length
-				local ry = math.min(FENCE_VIS_H * frac + (rng:NextNumber() - 0.5) * 1.2, math.min(topH[i], topH[i + 1]) - 0.6)
+				local ry = math.min(H * frac + (rng:NextNumber() - 0.5) * 1.2, math.min(topH[i], topH[i + 1]) - 0.6)
 				makePart({
 					Name = "DigFenceRail",
 					Size = Vector3.new(RAIL_W, 0.9, (z2 - z1) + 0.2),
@@ -1819,10 +1830,16 @@ local function buildZone1DigFence()
 	local fx = halfX + MARGIN
 	local frontZ = digCz - halfZ - MARGIN -- the -Z (lobby) edge we fence
 	local openZ = digCz + halfZ -- the +Z edge nearest the zone wall — left OPEN
-	buildBrokenFence(CFrame.new(cx, 1, frontZ) * CFrame.Angles(0, math.rad(90), 0), fx * 2, laneFolder, 101) -- front
+	-- FRONT fence in TWO runs with a centred GAP where the shop's dirt path walks in.
+	local segLen = fx - DIG_FENCE_GAP_HALF -- each front run: from ±gap out to ±fx
+	if segLen > 2 then
+		local segMid = (fx + DIG_FENCE_GAP_HALF) / 2 -- |x| centre of each front run
+		buildBrokenFence(CFrame.new(cx - segMid, 1, frontZ) * CFrame.Angles(0, math.rad(90), 0), segLen, laneFolder, 101, DIG_FENCE_H) -- front-left
+		buildBrokenFence(CFrame.new(cx + segMid, 1, frontZ) * CFrame.Angles(0, math.rad(90), 0), segLen, laneFolder, 112, DIG_FENCE_H) -- front-right
+	end
 	local sideLen, sideMidZ = openZ - frontZ, (openZ + frontZ) / 2
-	buildBrokenFence(CFrame.new(cx - fx, 1, sideMidZ), sideLen, laneFolder, 202) -- left
-	buildBrokenFence(CFrame.new(cx + fx, 1, sideMidZ), sideLen, laneFolder, 303) -- right
+	buildBrokenFence(CFrame.new(cx - fx, 1, sideMidZ), sideLen, laneFolder, 202, DIG_FENCE_H) -- left
+	buildBrokenFence(CFrame.new(cx + fx, 1, sideMidZ), sideLen, laneFolder, 303, DIG_FENCE_H) -- right
 end
 
 -- TWO grass-topped DIRT CLIFFS flanking the dig lane, running parallel to it (+Z),
@@ -2896,6 +2913,265 @@ end
 
 -- frame every rebirth wall with rock piles + add per-zone theme decor (trees / cacti / ice).
 local function decorateLane()
+	-- NOTE: the Cherry-blossom decor builders are declared INSIDE decorateLane (not at module
+	-- scope) on purpose. BaseManager's main chunk is near Luau's hard 200-locals-per-function cap;
+	-- declaring these at the top level overflowed it ("Out of local registers"), which made the
+	-- whole module fail to load and the map never build. Keeping them function-local fixes that.
+------------------------------------------------------------- CHERRY BLOSSOM (zone 6)
+local CHERRY_PINK = Color3.fromRGB(255, 150, 200)
+local CHERRY_PINK2 = Color3.fromRGB(255, 122, 184)
+local CHERRY_WOOD = Palette.TreeTrunk -- plank / lantern-cap wood
+local LANTERN_RED = Color3.fromRGB(214, 48, 52)
+
+-- world-space VISIBLE bbox (min, max) of a model — ignores invisible/oversized helper parts so an
+-- imported model grounds on its real trunk, not a stray root part (see imported-model scale caveat).
+local function visibleAABB(model: Model): (Vector3, Vector3)
+	local mn = Vector3.new(math.huge, math.huge, math.huge)
+	local mx = Vector3.new(-math.huge, -math.huge, -math.huge)
+	local found = false
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency < 0.95 then
+			found = true
+			local cf, sz = d.CFrame, d.Size
+			local hx, hy, hz = sz.X / 2, sz.Y / 2, sz.Z / 2
+			for _, sx in ipairs({ -1, 1 }) do
+				for _, sy in ipairs({ -1, 1 }) do
+					for _, sz2 in ipairs({ -1, 1 }) do
+						local w = cf:PointToWorldSpace(Vector3.new(sx * hx, sy * hy, sz2 * hz))
+						mn = Vector3.new(math.min(mn.X, w.X), math.min(mn.Y, w.Y), math.min(mn.Z, w.Z))
+						mx = Vector3.new(math.max(mx.X, w.X), math.max(mx.Y, w.Y), math.max(mx.Z, w.Z))
+					end
+				end
+			end
+		end
+	end
+	if not found then
+		local _, sz = model:GetBoundingBox()
+		local p = model:GetPivot().Position
+		return p - sz / 2, p + sz / 2
+	end
+	return mn, mx
+end
+
+-- procedural sakura fallback (used only if ServerStorage.CherryModel is missing from the build)
+local function buildProceduralCherry(x: number, z: number, surfaceY: number, height: number)
+	local tree = Instance.new("Model")
+	tree.Name = "CherryTree"
+	local trunkH = height * 0.5
+	local trunk = makePart({
+		Name = "Trunk", Size = Vector3.new(2.4, trunkH, 2.4), Color = Palette.TreeTrunk,
+		CanCollide = false, CastShadow = false, CFrame = CFrame.new(x, surfaceY + trunkH / 2, z), Parent = tree,
+	})
+	tree.PrimaryPart = trunk
+	local canopyY = surfaceY + trunkH
+	for _ = 1, 6 do
+		local r = height * (0.3 + decorRng:NextNumber() * 0.14)
+		makePart({
+			Name = "Blossom", Shape = Enum.PartType.Ball, NoStuds = true,
+			Size = Vector3.new(r, r * 0.85, r), Color = jitterColor(CHERRY_PINK, 0.06),
+			CanCollide = false, CastShadow = false,
+			CFrame = CFrame.new(x + (decorRng:NextNumber() - 0.5) * height * 0.45, canopyY + (decorRng:NextNumber() - 0.25) * height * 0.3, z + (decorRng:NextNumber() - 0.5) * height * 0.45),
+			Parent = tree,
+		})
+	end
+	tree.Parent = laneFolder
+end
+
+-- place one cherry tree: clone the SANITIZED ServerStorage.CherryModel, ground it on its VISIBLE
+-- base, anchor + make non-collidable (so it never traps a digging player). Procedural fallback.
+local function placeCherryTree(x: number, z: number, surfaceY: number, scale: number?)
+	local SS = game:GetService("ServerStorage")
+	local template = SS:FindFirstChild("CherryModel")
+	if not (template and template:IsA("Model")) then
+		buildProceduralCherry(x, z, surfaceY, decorRng:NextInteger(20, 28) * (scale or 1))
+		return
+	end
+	local tree = template:Clone()
+	if scale and scale ~= 1 then
+		pcall(function() tree:ScaleTo(scale) end) -- bigger sakura (pcall: never let a scale quirk break the build)
+	end
+	tree:PivotTo(tree:GetPivot() * CFrame.Angles(0, math.rad(decorRng:NextInteger(0, 359)), 0))
+	local mn, mx = visibleAABB(tree)
+	local center = (mn + mx) / 2
+	tree:PivotTo(tree:GetPivot() + Vector3.new(x - center.X, surfaceY - mn.Y, z - center.Z))
+	for _, d in ipairs(tree:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = true
+			d.CanCollide = false
+			d.CastShadow = false
+		end
+	end
+	tree.Name = "CherryTree"
+	tree.Parent = laneFolder
+end
+
+-- a flat pink petal patch lying on the floor at a jittered micro-height (so overlapping patches
+-- never z-fight). Many of these carpet the zone so the green grass barely shows through.
+local function buildPetalPatch(x: number, z: number, surfaceY: number)
+	local s = decorRng:NextNumber(8.0, 13.0)
+	makePart({
+		Name = "Petals", NoStuds = true,
+		Size = Vector3.new(s, 0.2, s * decorRng:NextNumber(0.75, 1.1)),
+		Color = jitterColor((decorRng:NextNumber() < 0.5) and CHERRY_PINK or CHERRY_PINK2, 0.05),
+		CanCollide = false, CastShadow = false,
+		-- lie nearly flat (tiny 0.1-0.2 height jitter ONLY to avoid coplanar z-fighting; no piling)
+		CFrame = CFrame.new(x, surfaceY + 0.1 + decorRng:NextNumber() * 0.1, z) * CFrame.Angles(0, math.rad(decorRng:NextInteger(0, 359)), 0),
+		Parent = laneFolder,
+	})
+end
+
+-- THREE wood planks jutting from EACH border wall (the ±X lane cliffs) within the zone, each with
+-- a dim red lantern hanging off its lane-side end. Light brightness kept low ("not THAT bright").
+local function buildCherryPlankLanterns(centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local wallX = LANE_SIDE_INNER_X   -- inner cliff face (±100)
+	local PLANK_LEN, PLANK_Y = 11, 34 -- protrude 11 studs into the lane; mounted HIGH (34) up the wall
+	for _, sign in ipairs({ -1, 1 }) do
+		for _, dz in ipairs({ -46, 0, 46 }) do
+			local z = centerZ + dz
+			local outerX = cx + sign * (wallX - PLANK_LEN)      -- plank's lane-side end (lantern hangs here)
+			local plankCx = cx + sign * (wallX - PLANK_LEN / 2) -- plank centre
+			makePart({ -- the plank (horizontal wood beam from the wall)
+				Name = "CherryPlank", Size = Vector3.new(PLANK_LEN, 1, 1.8), Color = CHERRY_WOOD,
+				CFrame = CFrame.new(plankCx, PLANK_Y, z), Parent = laneFolder,
+			})
+			local lanternCy = PLANK_Y - 6.5
+			for _, sxo in ipairs({ -0.7, 0.7 }) do -- two short hanging strings
+				makePart({
+					Name = "LanternString", NoStuds = true, Material = Enum.Material.SmoothPlastic,
+					Size = Vector3.new(0.2, 4.6, 0.2), Color = Color3.fromRGB(40, 30, 20),
+					CanCollide = false, CastShadow = false,
+					CFrame = CFrame.new(outerX, PLANK_Y - 2.3, z + sxo), Parent = laneFolder,
+				})
+			end
+			local lantern = makePart({ -- upright cylindrical red lantern (soft Neon)
+				Name = "CherryLantern", NoStuds = true, Material = Enum.Material.Neon, Shape = Enum.PartType.Cylinder,
+				Size = Vector3.new(4.5, 3.2, 3.2), Color = LANTERN_RED, CanCollide = false, CastShadow = false,
+				CFrame = CFrame.new(outerX, lanternCy, z) * CFrame.Angles(0, 0, math.rad(90)), Parent = laneFolder,
+			})
+			for _, capDy in ipairs({ 2.0, -2.0 }) do -- wood caps top + bottom
+				makePart({
+					Name = "LanternCap", NoStuds = true, Size = Vector3.new(3.4, 0.6, 3.4), Color = CHERRY_WOOD,
+					CanCollide = false, CastShadow = false, CFrame = CFrame.new(outerX, lanternCy + capDy, z), Parent = laneFolder,
+				})
+			end
+			local light = Instance.new("PointLight") -- DIM red glow
+			light.Color = LANTERN_RED
+			light.Brightness = 1.1
+			light.Range = 14
+			light.Shadows = false
+			light.Parent = lantern
+		end
+	end
+end
+
+-- WOOD-PLANK border walls: clad the inner face of both lane cliffs (within this zone) with a row of
+-- vertical wood planks (two alternating tones) so the border reads as a wooden plank wall.
+local function buildCherryWoodWalls(centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local wallX = LANE_SIDE_INNER_X                  -- inner cliff face (±100)
+	local wallH = LANE_SIDE_BODY_H + LANE_SIDE_CAP_H - 1.5 -- just under the grass-cap top (avoids a coplanar z-fight there)
+	local z0, z1 = centerZ - (LANE_STEP / 2 - 3), centerZ + (LANE_STEP / 2 - 3)
+	local woodA, woodB = Palette.Fence, Color3.fromRGB(150, 84, 40)
+	local PLANK_W = 5
+	for _, sign in ipairs({ -1, 1 }) do
+		local i, z = 0, z0
+		while z <= z1 do
+			makePart({
+				Name = "CherryWoodWall",
+				-- THICK plank (7): its back embeds INTO the dirt cliff so the cliff face is hidden inside it
+				-- (no near-coplanar surfaces) -> no z-fighting / flicker on either wall.
+				Size = Vector3.new(7, wallH, PLANK_W - 0.4),
+				Color = (i % 2 == 0) and woodA or woodB,
+				CFrame = CFrame.new(cx + sign * (wallX - 0.5), 1 + wallH / 2, z),
+				Parent = laneFolder,
+			})
+			i += 1
+			z += PLANK_W
+		end
+	end
+end
+
+-- CHERRY BLOSSOM theme: sakura trees (clear of the dig mounds via no-dig rings), a pink-petal carpet
+-- over the whole zone (grass barely showing), + plank-hung dim red lanterns on both border walls.
+local function buildCherryBlossomDecor(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local digSurfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2
+
+	-- raycast only against flat surfaces (ground + this zone's dig plate + border), never decor
+	local surfaces: { Instance } = {}
+	local world = Workspace:FindFirstChild("World")
+	local ground = world and world:FindFirstChild("Ground")
+	if ground then
+		surfaces[#surfaces + 1] = ground
+	end
+	for _, p in ipairs(laneFolder:GetChildren()) do
+		if p:IsA("BasePart") and (p.Name == ("Zone%dDig"):format(zone) or p.Name == "ZoneBorder") then
+			surfaces[#surfaces + 1] = p
+		end
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = surfaces
+	local function surfaceYAt(x: number, z: number): number
+		local hit = Workspace:Raycast(Vector3.new(x, 60, z), Vector3.new(0, -120, 0), params)
+		return hit and hit.Position.Y or LANE_SEG_Y
+	end
+
+	local halfX = LANE_SIDE_INNER_X - 6
+	local halfZ = LANE_STEP / 2 - 6
+
+	-- 1) PETAL CARPET — GRID-TILED so the leaves FULLY cover the floor (overlapping patches, no gaps;
+	--    the grass underneath is completely hidden — no floor recolour needed).
+	local STEP, pHX, pHZ = 6, LANE_SIDE_INNER_X - 2, LANE_STEP / 2 - 3
+	local gz = centerZ - pHZ
+	while gz <= centerZ + pHZ do
+		local gxx = cx - pHX
+		while gxx <= cx + pHX do
+			local px = gxx + (decorRng:NextNumber() - 0.5) * 3
+			local pz = gz + (decorRng:NextNumber() - 0.5) * 3
+			buildPetalPatch(px, pz, surfaceYAt(px, pz))
+			gxx += STEP
+		end
+		gz += STEP
+	end
+
+	-- 2) CHERRY TREES, kept OFF the dig mounds: a ring outside the DigHalf(40) core + a few inside
+	--    the core each ringed by a no-dig exclusion so mounds never spawn on them.
+	local placed: { { x: number, z: number } } = {}
+	local function farEnough(x: number, z: number, gap: number): boolean
+		for _, p in ipairs(placed) do
+			if (x - p.x) ^ 2 + (z - p.z) ^ 2 < gap * gap then
+				return false
+			end
+		end
+		return true
+	end
+	for _ = 1, 4 do -- FEWER, BIGGER outer-rim trees (radius 52-90, between the mound core and the walls)
+		for _ = 1, 14 do
+			local ang = decorRng:NextNumber() * math.pi * 2
+			local rad = 52 + decorRng:NextNumber() * 38
+			local x = cx + math.cos(ang) * rad
+			local z = centerZ + math.sin(ang) * rad
+			if math.abs(x - cx) < halfX and math.abs(z - centerZ) < halfZ and farEnough(x, z, 34) then
+				placed[#placed + 1] = { x = x, z = z }
+				placeCherryTree(x, z, surfaceYAt(x, z), 1.45)
+				break
+			end
+		end
+	end
+	for _, s in ipairs({ { 25, 17 }, { -23, -19 } }) do -- 2 bigger trees inside the dig core
+		local x = cx + s[1] + (decorRng:NextNumber() - 0.5) * 6
+		local z = centerZ + s[2] + (decorRng:NextNumber() - 0.5) * 6
+		placeCherryTree(x, z, digSurfaceY, 1.45)
+		addDigExclusion(x, z, 19, zone)
+	end
+
+	-- 3) WOOD-PLANK border walls + protruding planks with dim red lanterns (3 per side)
+	buildCherryWoodWalls(centerZ)
+	buildCherryPlankLanterns(centerZ)
+end
+
 	for k = 1, ZoneConfig.MaxZone - 1 do
 		local wz = LANE_START + (k - 1) * LANE_STEP + LANE_STEP / 2
 		if k == 1 then
@@ -2933,6 +3209,10 @@ local function decorateLane()
 			-- CRYSTAL CAVERNS: the main red/blue/green crystal + glowing mushrooms / grass around
 			-- the rim + crystals jutting from the walls (all clear of the central dig-mound core)
 			buildCavernDecor(z, LANE_START + (z - 1) * LANE_STEP)
+		elseif data and data.Theme == "CherryBlossom" then
+			-- CHERRY BLOSSOM: sakura trees (clear of mounds) + a pink-petal carpet + plank-hung
+			-- dim red lanterns on both border walls.
+			buildCherryBlossomDecor(z, LANE_START + (z - 1) * LANE_STEP)
 		end
 	end
 end

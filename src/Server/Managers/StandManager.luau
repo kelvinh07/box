@@ -29,6 +29,7 @@ local StandManager = {}
 
 local STANDS_FOLDER_NAME = "Stands"
 local SHOP_MODEL_NAME = "ShopModel" -- imported model we pull the vendor CHARACTER out of
+local VENDOR_SCALE = 2 -- shopkeeper size multiplier (grounded on the booth floor; roomy under the eave)
 
 -- ===================== OPEN PAVILION (central shop) =====================
 -- Centered on PAV_CX/PAV_CZ in the parted-plot plaza, FRONT (open, +Z) toward the dig lane.
@@ -44,6 +45,30 @@ local ROOF_OVERHANG = 3 -- roof eave extends this far past the floor edge
 local PILLAR_INSET = 1.5 -- pillars sit this far in from the floor corners
 -- SHINGLE-ROW HIP ROOF: a 4-sided hip of even horizontal shingle courses (alternating brown bands).
 local ROOF_RISE = 20 -- apex height above the eave (lower = broader/flatter roof)
+
+-- CORNER STALLS: two booths in the FRONT corners. Each REUSES the pavilion's main corner pillar as
+-- its OUTER pillar, adds 3 more FULL-SIZE (4x4) pillars inward to finish the square, and is wrapped
+-- by a waist-high SOLID plank fence on all sides. NO separate roof — the main pavilion roof covers it.
+local STALL_S = 20                                                  -- stall side length (inward from the corner pillar) — BIGGER booth
+local STALL_FENCE_H = 4                                             -- plank fence (counter) height — a touch taller for the bigger booth
+local STALL_CX = (PAV_HALF_W - PILLAR_INSET) - STALL_S / 2          -- |X| of each stall / vendor centre
+local STALL_CZ = PAV_CZ + (PAV_HALF_L - PILLAR_INSET) - STALL_S / 2 -- Z of each stall / vendor centre
+
+-- FRONT-CORNER L-WINDOWS: each FRONT corner pillar is SPLIT (a bottom + a top stub) by a horizontal
+-- WINDOW band that wraps the corner (an L in plan — one leg down each wall) so the corner stall is
+-- visible from outside. The opening is trimmed with SLENDER (thinner-than-pillar) timber framing.
+local CORNER_WIN_LEG = STALL_S                    -- window leg length along each wall from the corner (= stall span)
+local CORNER_WIN_SILL = FLOOR_TOP + STALL_FENCE_H -- window bottom Y = stall fence (counter) top
+local CORNER_WIN_TOP = 22                         -- window top Y (a plank header bridges above, up to the eave)
+local CORNER_FRAME_T = 1.6                        -- slender framing cross-section (vs the 4-stud main pillars)
+
+-- INTERACTION CIRCLE: a glowing white ring on the booth floor; the client auto-opens that shop's panel
+-- when the player steps inside it. A little bigger than the STALL_S booth box.
+local SHOP_ZONE_RADIUS = 16 -- interaction circle radius (visual ring + auto-open trigger)
+
+-- enclosing PLANK WALLS + a centred double-door opening in the FRONT (where the dirt path enters)
+local DOOR_HALF = 11   -- half-width of the front double-door opening (WIDER entry — 22 wide)
+local DOOR_TOP = 18    -- top of the door opening; a plank header fills above it
 
 -- BROWN WOOD colours (Plastic material -> Surface.applyStuds gives the studs+inlets look)
 local WOOD_MED = Palette.Fence -- warm brown: floor + roof panels (#B06430)
@@ -197,6 +222,19 @@ local function getShopTemplate(): Model?
 	return nil
 end
 
+-- Uniformly SCALE an anchored, posed model about a fixed world point: each part's Size and its offset
+-- from `pivot` scale by `scale`, orientation preserved. Robust for rigged/imported characters where
+-- Model:ScaleTo can misbehave (invisible oversized roots, scatter). Pivot at the feet keeps it grounded.
+local function scaleModelAbout(model: Instance, scale: number, pivot: Vector3)
+	for _, p in ipairs(model:GetDescendants()) do
+		if p:IsA("BasePart") then
+			p.Size = p.Size * scale
+			local cf = p.CFrame
+			p.CFrame = (cf - cf.Position) + (pivot + (cf.Position - pivot) * scale)
+		end
+	end
+end
+
 ----------------------------------------------------------------- a vendor (character + prompt only)
 -- Stations ONLY the vendor CHARACTER (extracted from ShopModel, shed discarded) standing on the
 -- floor facing +Z, with a name tag and an INSTANT StandType ProximityPrompt. No stall/booth.
@@ -237,8 +275,14 @@ local function buildVendor(standType: string, title: string, pos: Vector3, paren
 	local cf, sz = v:GetBoundingBox()
 	v:PivotTo(v:GetPivot() + Vector3.new(0, FLOOR_TOP - (cf.Y - sz.Y / 2), 0))
 
-	-- name tag above the head
-	floatingLabel(title, Vector3.new(pos.X, FLOOR_TOP + sz.Y + 1.6, pos.Z), folder, 200)
+	-- BIG shopkeeper: scale up about the feet so it stays grounded on the booth floor
+	if VENDOR_SCALE ~= 1 then
+		scaleModelAbout(v, VENDOR_SCALE, Vector3.new(pos.X, FLOOR_TOP, pos.Z))
+	end
+	local _, sz2 = v:GetBoundingBox()
+
+	-- name tag above the (scaled) head
+	floatingLabel(title, Vector3.new(pos.X, FLOOR_TOP + sz2.Y + 1.6, pos.Z), folder, 200)
 
 	-- invisible interact volume + instant prompt (client opens the panel off StandType)
 	local interact = makePart({ Name = "Interact", Size = Vector3.new(6, 7, 5), Transparency = 1, CanCollide = false, NoStuds = true, CFrame = CFrame.new(pos.X, FLOOR_TOP + 3.5, pos.Z), Parent = folder })
@@ -248,9 +292,10 @@ local function buildVendor(standType: string, title: string, pos: Vector3, paren
 	prompt.ObjectText = title
 	prompt.HoldDuration = 0
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
-	prompt.MaxActivationDistance = 11
+	prompt.MaxActivationDistance = SHOP_ZONE_RADIUS
 	prompt.RequiresLineOfSight = false
 	prompt:SetAttribute("StandType", standType)
+	prompt:SetAttribute("ZoneRadius", SHOP_ZONE_RADIUS) -- client auto-opens this shop when inside the ring
 	prompt.Parent = interact
 end
 
@@ -277,6 +322,164 @@ local function buildRobuxShop(parent: Instance)
 end
 
 ----------------------------------------------------------------- the open pavilion
+-- One front-corner STALL (sign = -1 left / +1 right). The OUTER pillar is the existing main corner
+-- pillar; add 3 more FULL-SIZE (4x4, full-height) pillars inward to finish the square, then wrap a
+-- waist-high SOLID plank fence around all four sides. No roof (the main pavilion roof covers it).
+
+-- A glowing WHITE interaction RING on the floor (Neon segments), marking the shop's auto-open zone.
+local function buildShopRing(parent: Instance, cx: number, cz: number, radius: number)
+	local ring = Instance.new("Folder")
+	ring.Name = "ShopZoneRing"
+	ring.Parent = parent
+	local N = 48
+	local segLen = (2 * math.pi * radius) / N + 0.3 -- per-segment arc length + slight overlap
+	local y = FLOOR_TOP + 0.2
+	for i = 0, N - 1 do
+		local a = (i / N) * math.pi * 2
+		local seg = Instance.new("Part")
+		seg.Name = "RingSeg"
+		seg.Anchored = true
+		seg.CanCollide = false
+		seg.CastShadow = false
+		seg.Material = Enum.Material.Neon -- self-lit white = the "slight glow"
+		seg.Color = Color3.fromRGB(255, 255, 255)
+		seg.Size = Vector3.new(segLen, 0.25, 0.5)
+		seg.CFrame = CFrame.new(cx + math.cos(a) * radius, y, cz + math.sin(a) * radius) * CFrame.Angles(0, a + math.pi / 2, 0)
+		seg.Parent = ring
+	end
+	return ring
+end
+
+local function buildCornerStall(parent: Instance, sign: number)
+	local pilX = PAV_HALF_W - PILLAR_INSET          -- main-pillar |X|
+	local ox, ix = sign * pilX, sign * (pilX - STALL_S) -- outer (= the main pillar) + inner pillar X
+	local oz = PAV_CZ + (PAV_HALF_L - PILLAR_INSET) -- front pillar-row Z (outer-front = the main pillar)
+	local bz = oz - STALL_S                         -- back pillar-row Z
+	local pillarH = EAVE_Y - FLOOR_TOP
+	local function pillar(x: number, z: number)
+		makePart({ Name = "StallPillar", Size = Vector3.new(4, pillarH, 4), Color = WOOD_DARK, CFrame = CFrame.new(x, (FLOOR_TOP + EAVE_Y) / 2, z), Parent = parent })
+	end
+	-- INNER-FRONT corner SPLIT (bottom + top stub) like the building's outer corner, so the booth gets a
+	-- matching L-shaped framed WINDOW on its inner side (the corner that faces into the shop).
+	local botH = CORNER_WIN_SILL - FLOOR_TOP
+	local topY = 35.5 -- extend the corner post up to just under the sloped roof (underside ~35.75 here)
+	local topH = topY - CORNER_WIN_TOP
+	makePart({ Name = "StallPillar", Size = Vector3.new(4, botH, 4), Color = WOOD_DARK, CFrame = CFrame.new(ix, FLOOR_TOP + botH / 2, oz), Parent = parent })
+	makePart({ Name = "StallPillar", Size = Vector3.new(4, topH, 4), Color = WOOD_DARK, CFrame = CFrame.new(ix, topY - topH / 2, oz), Parent = parent })
+	pillar(ox, bz) -- outer-back
+	pillar(ix, bz) -- inner-back   (the outer-FRONT pillar IS the main pavilion pillar — not rebuilt)
+	-- waist-high SOLID plank fence around all 4 sides (pillar-centre to pillar-centre)
+	local fy = FLOOR_TOP + STALL_FENCE_H / 2
+	local midX, midZ = (ox + ix) / 2, (oz + bz) / 2
+	makePart({ Name = "StallFence", Size = Vector3.new(STALL_S, STALL_FENCE_H, 0.9), Color = WOOD_MED, CFrame = CFrame.new(midX, fy, oz), Parent = parent }) -- front
+	makePart({ Name = "StallFence", Size = Vector3.new(STALL_S, STALL_FENCE_H, 0.9), Color = WOOD_MED, CFrame = CFrame.new(midX, fy, bz), Parent = parent }) -- back
+	makePart({ Name = "StallFence", Size = Vector3.new(0.9, STALL_FENCE_H, STALL_S), Color = WOOD_MED, CFrame = CFrame.new(ox, fy, midZ), Parent = parent }) -- outer
+	makePart({ Name = "StallFence", Size = Vector3.new(0.9, STALL_FENCE_H, STALL_S), Color = WOOD_MED, CFrame = CFrame.new(ix, fy, midZ), Parent = parent }) -- inner
+	-- FRAME ALL FOUR SIDES the same way: a slender sill rail (atop the fence) + a lintel beam on each side.
+	local t = CORNER_FRAME_T
+	for _, y in ipairs({ CORNER_WIN_SILL, CORNER_WIN_TOP }) do
+		makePart({ Name = "WindowFrame", Size = Vector3.new(STALL_S, t, t), Color = WOOD_DARK, CFrame = CFrame.new(midX, y, oz), Parent = parent }) -- front
+		makePart({ Name = "WindowFrame", Size = Vector3.new(STALL_S, t, t), Color = WOOD_DARK, CFrame = CFrame.new(midX, y, bz), Parent = parent }) -- back
+		makePart({ Name = "WindowFrame", Size = Vector3.new(t, t, STALL_S), Color = WOOD_DARK, CFrame = CFrame.new(ix, y, midZ), Parent = parent }) -- inner
+		makePart({ Name = "WindowFrame", Size = Vector3.new(t, t, STALL_S), Color = WOOD_DARK, CFrame = CFrame.new(ox, y, midZ), Parent = parent }) -- outer
+	end
+	-- FILL THE TOP with header PLANKS above the window on ALL FOUR sides, so the whole booth box is a
+	-- framed window on every side (matching the exterior corners).
+	local function headerWall(x1: number, z1: number, x2: number, z2: number)
+		local dx, dz = x2 - x1, z2 - z1
+		local len = math.sqrt(dx * dx + dz * dz)
+		local n = math.max(1, math.floor(len / 5 + 0.5))
+		local bl = len / n
+		local ux, uz = dx / len, dz / len
+		local angle = math.atan2(dx, dz)
+		local hh = EAVE_Y - CORNER_WIN_TOP
+		for i = 0, n - 1 do
+			local tt = bl * (i + 0.5)
+			makePart({ Name = "ShopWall", Size = Vector3.new(1.5, hh, bl + 0.15), Color = (i % 2 == 0) and WOOD_MED or WOOD_DARK, CFrame = CFrame.new(x1 + ux * tt, CORNER_WIN_TOP + hh / 2, z1 + uz * tt) * CFrame.Angles(0, angle, 0), Parent = parent })
+		end
+	end
+	headerWall(ix, oz, ix, bz) -- inner side
+	headerWall(ox, oz, ox, bz) -- outer side
+	headerWall(ix, oz, ox, oz) -- front side
+	headerWall(ix, bz, ox, bz) -- back side (the one the shopkeeper's back faces)
+	-- glowing interaction ring on the floor, a bit bigger than the booth box
+	buildShopRing(parent, midX, midZ, SHOP_ZONE_RADIUS)
+end
+
+-- a run of vertical PLANK boards (two alternating wood tones) from (ax,az) to (bx,bz), spanning y0..y1.
+local function plankRun(parent: Instance, ax: number, az: number, bx: number, bz: number, y0: number, y1: number)
+	local dx, dz = bx - ax, bz - az
+	local len = math.sqrt(dx * dx + dz * dz)
+	if len < 0.5 then
+		return
+	end
+	local angle = math.atan2(dx, dz) -- run direction (local +Z runs along the wall)
+	local n = math.max(1, math.floor(len / 5 + 0.5))
+	local bl = len / n
+	local ux, uz = dx / len, dz / len
+	local h = y1 - y0
+	for i = 0, n - 1 do
+		local t = bl * (i + 0.5)
+		makePart({ Name = "ShopWall", Size = Vector3.new(1.5, h, bl + 0.15), Color = (i % 2 == 0) and WOOD_MED or WOOD_DARK, CFrame = CFrame.new(ax + ux * t, y0 + h / 2, az + uz * t) * CFrame.Angles(0, angle, 0), Parent = parent })
+	end
+end
+
+-- Like plankRun, but leaves a horizontal WINDOW band [sillY..lintY] OPEN: it builds the planks BELOW
+-- the sill (y0..sillY) and the header ABOVE the lintel (lintY..y1), skipping the middle.
+local function windowedRun(parent: Instance, ax: number, az: number, bx: number, bz: number, y0: number, y1: number, sillY: number, lintY: number)
+	if sillY > y0 then
+		plankRun(parent, ax, az, bx, bz, y0, sillY) -- wall below the window
+	end
+	if y1 > lintY then
+		plankRun(parent, ax, az, bx, bz, lintY, y1) -- header plank above the window
+	end
+end
+
+-- Slender timber FRAME around one front-corner L-window (sign = -1 left / +1 right): a thin
+-- full-height mullion post at the INNER end of each leg ("the pillar, but thinner") + a sill and a
+-- lintel bar capping the opening. The chunky SPLIT corner pillar frames the corner itself. `proud`
+-- is the signed offset off the wall face — POSITIVE = exterior trim, NEGATIVE = interior trim — so
+-- calling it with ±0.8 frames the window the SAME on both the inside and the outside.
+local function buildCornerWindowFrame(parent: Instance, sign: number, proud: number)
+	local R = PAV_CX + sign * PAV_HALF_W -- this corner's outer wall edge (±44)
+	local F = PAV_CZ + PAV_HALF_L        -- front wall edge
+	local W = CORNER_WIN_LEG
+	local t = CORNER_FRAME_T
+	local midY = (FLOOR_TOP + EAVE_Y) / 2
+	local fullH = EAVE_Y - FLOOR_TOP
+	-- thin full-height mullion posts at each leg's INNER end
+	makePart({ Name = "WindowFrame", Size = Vector3.new(t, fullH, t), Color = WOOD_DARK, CFrame = CFrame.new(R - sign * W, midY, F + proud), Parent = parent }) -- front leg inner
+	makePart({ Name = "WindowFrame", Size = Vector3.new(t, fullH, t), Color = WOOD_DARK, CFrame = CFrame.new(R + sign * proud, midY, F - W), Parent = parent }) -- side leg inner
+	-- sill (bottom) + lintel (top) bars along each leg (front leg runs in X, side leg runs in Z)
+	for _, y in ipairs({ CORNER_WIN_SILL, CORNER_WIN_TOP }) do
+		makePart({ Name = "WindowFrame", Size = Vector3.new(W + t, t, t), Color = WOOD_DARK, CFrame = CFrame.new(R - sign * W / 2, y, F + proud), Parent = parent }) -- front leg
+		makePart({ Name = "WindowFrame", Size = Vector3.new(t, t, W + t), Color = WOOD_DARK, CFrame = CFrame.new(R + sign * proud, y, F - W / 2), Parent = parent }) -- side leg
+	end
+end
+
+-- enclose the pavilion with PLANK walls: solid back, an L-WINDOW leg wrapping each FRONT corner
+-- (revealing the corner stalls), a centred DOUBLE-DOOR opening in the front, and a plank header
+-- bridging both the door and (via windowedRun) every window.
+local function buildShopWalls(parent: Instance)
+	local L, R = PAV_CX - PAV_HALF_W, PAV_CX + PAV_HALF_W -- ±44 (left/right edges)
+	local F, B = PAV_CZ + PAV_HALF_L, PAV_CZ - PAV_HALF_L -- front / back edges
+	local y0, y1 = FLOOR_TOP, EAVE_Y
+	local sill, lint = CORNER_WIN_SILL, CORNER_WIN_TOP
+	local W = CORNER_WIN_LEG
+	plankRun(parent, L, B, R, B, y0, y1) -- back (solid)
+	-- LEFT / RIGHT walls: a window leg near the FRONT corner, solid the rest of the way back
+	windowedRun(parent, L, F, L, F - W, y0, y1, sill, lint) -- left, front-corner window leg
+	plankRun(parent, L, F - W, L, B, y0, y1)                -- left, solid rest
+	windowedRun(parent, R, F, R, F - W, y0, y1, sill, lint) -- right, front-corner window leg
+	plankRun(parent, R, F - W, R, B, y0, y1)                -- right, solid rest
+	-- FRONT wall: a window leg at each corner, solid up to the centred double-door, + a door header
+	windowedRun(parent, L, F, L + W, F, y0, y1, sill, lint)                      -- front, left-corner window leg
+	plankRun(parent, L + W, F, PAV_CX - DOOR_HALF, F, y0, y1)                    -- front, left of door (solid)
+	plankRun(parent, PAV_CX + DOOR_HALF, F, R - W, F, y0, y1)                    -- front, right of door (solid)
+	windowedRun(parent, R - W, F, R, F, y0, y1, sill, lint)                      -- front, right-corner window leg
+	plankRun(parent, PAV_CX - DOOR_HALF, F, PAV_CX + DOOR_HALF, F, DOOR_TOP, y1) -- header over the door
+end
+
 local function buildPavilion(parent: Instance): Model
 	local pav = Instance.new("Model")
 	pav.Name = "ShopBuilding"
@@ -285,14 +488,23 @@ local function buildPavilion(parent: Instance): Model
 	-- FLOOR (raised plank platform)
 	makePart({ Name = "Floor", Size = Vector3.new(PAV_HALF_W * 2, 1, PAV_HALF_L * 2), Color = WOOD_MED, CFrame = CFrame.new(PAV_CX, FLOOR_TOP - 0.5, PAV_CZ), Parent = pav })
 
-	-- 4 CORNER PILLARS
+	-- 4 CORNER PILLARS — the two FRONT corners (sz = +1) are SPLIT into a bottom + a top stub by the
+	-- L-windows that wrap them; the back corners stay single full-height pillars.
 	local px = PAV_HALF_W - PILLAR_INSET
 	local pz = PAV_HALF_L - PILLAR_INSET
 	local pillarTops = {}
 	for _, sx in ipairs({ -1, 1 }) do
 		for _, sz in ipairs({ -1, 1 }) do
 			local cx, cz = PAV_CX + sx * px, PAV_CZ + sz * pz
-			makePart({ Name = "Pillar", Size = Vector3.new(4, EAVE_Y - FLOOR_TOP, 4), Color = WOOD_DARK, CFrame = CFrame.new(cx, (FLOOR_TOP + EAVE_Y) / 2, cz), Parent = pav })
+			if sz == 1 then
+				-- the window band passes THROUGH the pillar -> two parts (bottom stub + top stub)
+				local botH = CORNER_WIN_SILL - FLOOR_TOP
+				local topH = EAVE_Y - CORNER_WIN_TOP
+				makePart({ Name = "Pillar", Size = Vector3.new(4, botH, 4), Color = WOOD_DARK, CFrame = CFrame.new(cx, FLOOR_TOP + botH / 2, cz), Parent = pav })
+				makePart({ Name = "Pillar", Size = Vector3.new(4, topH, 4), Color = WOOD_DARK, CFrame = CFrame.new(cx, EAVE_Y - topH / 2, cz), Parent = pav })
+			else
+				makePart({ Name = "Pillar", Size = Vector3.new(4, EAVE_Y - FLOOR_TOP, 4), Color = WOOD_DARK, CFrame = CFrame.new(cx, (FLOOR_TOP + EAVE_Y) / 2, cz), Parent = pav })
+			end
 			table.insert(pillarTops, Vector3.new(cx, EAVE_Y, cz))
 		end
 	end
@@ -331,14 +543,15 @@ local function buildPavilion(parent: Instance): Model
 	end
 	makePart({ Name = "ApexCap", Size = Vector3.new(3.5, 3.5, 3.5), Color = WOOD_DARK, CFrame = CFrame.new(apex), Parent = pav })
 
-	-- HANGING "SHOP" SIGN: a board suspended BELOW the front eave beam by two chains (was mounted
-	-- above the frame). Text on the wood (faces +Z / the lane); players walk under it.
-	local signZ = PAV_CZ + pz -- front eave-beam line
-	local beamBottomY = EAVE_Y - 2 -- bottom of the front eave plate (centre EAVE_Y-1, 2 tall)
-	local signCY = EAVE_Y - 11 -- board centre (hangs ~11 below the eave)
+	-- HANGING "SHOP" SIGN: a board hung OUTSIDE the front planks, tucked under the roof OVERHANG, by
+	-- two chains up to the eave. Text on the wood (faces +Z / the lane); players walk under it. It sits
+	-- in FRONT of the wall (PAV_HALF_L + 2) so the planks/door-header no longer block it.
+	local signZ = PAV_CZ + PAV_HALF_L + 2 -- just in front of the front-wall planks (outer face ~PAV_HALF_L+0.75)
+	local beamBottomY = EAVE_Y -- chains run up to the eave / roof overhang
+	local signCY = EAVE_Y - 7 -- board centre (raised — short chains hang it just under the eave)
 	local signTopY = signCY + 3.5 -- top edge of the 7-tall board
 	woodSign("SHOP", Vector3.new(30, 7, 1.2), Vector3.new(PAV_CX, signCY, signZ), 1, pav)
-	for _, sx in ipairs({ -1, 1 }) do -- two chains from the board's top corners up to the beam
+	for _, sx in ipairs({ -1, 1 }) do -- two chains from the board's top corners up to the eave overhang
 		makePart({
 			Name = "SignChain",
 			Size = Vector3.new(0.5, beamBottomY - signTopY, 0.5),
@@ -354,6 +567,18 @@ local function buildPavilion(parent: Instance): Model
 	-- BACK features
 	buildDailyReward(pav)
 	buildRobuxShop(pav)
+
+	-- enclose the whole shop in plank walls (centred double-door + an L-window wrapping each front corner),
+	-- then frame each corner window the SAME inside AND outside (both corners)
+	buildShopWalls(pav)
+	for _, sign in ipairs({ -1, 1 }) do
+		buildCornerWindowFrame(pav, sign, 0.8) -- exterior trim
+		buildCornerWindowFrame(pav, sign, -0.8) -- interior trim (same framework on the inside)
+	end
+
+	-- FRONT-CORNER stalls (reuse each main corner pillar + 3 full pillars + a waist-high plank fence)
+	buildCornerStall(pav, -1)
+	buildCornerStall(pav, 1)
 
 	return pav
 end
@@ -374,8 +599,9 @@ function StandManager.init()
 	-- Shovel LEFT (-X), Incubator RIGHT (+X).
 	-- vendors stand in the CENTRE of the two FRONT quadrants: Shovel = front-left (Q3),
 	-- Incubator = front-right (Q4). (Daily/Robux fill the two back quadrants Q2/Q1.)
-	buildVendor("Shovel", "🪓 SHOVEL", Vector3.new(PAV_CX - PAV_HALF_W / 2, FLOOR_TOP, PAV_CZ + PAV_HALF_L / 2), folder)
-	buildVendor("Incubator", "🔥 INCUBATOR", Vector3.new(PAV_CX + PAV_HALF_W / 2, FLOOR_TOP, PAV_CZ + PAV_HALF_L / 2), folder)
+	-- vendors stand INSIDE their front-corner stalls (in the corner by the main pillar)
+	buildVendor("Shovel", "🪓 SHOVEL", Vector3.new(PAV_CX - STALL_CX, FLOOR_TOP, STALL_CZ), folder)
+	buildVendor("Incubator", "🔥 INCUBATOR", Vector3.new(PAV_CX + STALL_CX, FLOOR_TOP, STALL_CZ), folder)
 end
 
 return StandManager

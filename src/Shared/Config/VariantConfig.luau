@@ -11,7 +11,7 @@
 -- Commons) generate gems; BrainrotMath divides ONLY the per-minute gem total by 60.
 --
 -- CashMults are tuned (Gold 2.2, Diamond 3.6) so Gold(N) < Normal(N+1) < Diamond(N)
--- at every adjacent tier pair. Galaxy (x6) stays PARKED/unobtainable.
+-- at every adjacent tier pair. Galaxy (x6) is the rarest pull — 1% in every egg.
 --
 -- Variant roll odds are WEIGHTS (not %). They get nudged by Luck (see DiggingManager).
 

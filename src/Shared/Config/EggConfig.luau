@@ -5,16 +5,20 @@
 --
 -- Egg order (low -> high): Common, Uncommon, Rare, Epic, Legendary, Mythic.
 --   * Epic  egg = purple, size between Rare & Legendary.
---   * Mythic egg = red, one size bigger than Legendary; it has NO base (Normal) brainrots.
+--   * Mythic egg = red, one size bigger than Legendary.
 --
--- Each base brainrot tier (Common..Legendary) seeds three eggs: its OWN egg with the Normal
--- version, the egg ONE tier up with the Gold version, and the egg TWO tiers up with the
--- Diamond version (clamped to Mythic, the top egg). Galaxy versions are created by the
--- factory but PARKED (no egg yet) until more eggs/versions are added.
+-- Each egg hatches EVERY variant (Normal/Gold/Diamond/Galaxy) of its OWN brainrot tier — e.g. the
+-- Common egg can give a Normal, Gold, Diamond OR Galaxy COMMON brainrot. The per-variant roll odds
+-- (Normal 80 / Gold 15 / Diamond 4 / Galaxy 1, nudged by Luck) live in VariantConfig and are
+-- applied in IncubationManager.pickPoolGroup, so rarer versions are correspondingly rarer.
+-- The Mythic egg has no base tier of its own: it draws from the TOP tier (Legendary) but DROPS the
+-- Normal variant, making it the premium "guaranteed shiny" egg (Gold/Diamond/Galaxy only).
 --
 -- NOTE: the per-zone DIG ODDS (which egg you dig) live in ZoneConfig.
 
 export type EggRarity = "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary" | "Mythic"
+
+local VariantConfig = require(script.Parent.VariantConfig)
 
 local EggConfig = {}
 
@@ -47,16 +51,19 @@ end
 -- pressure with many players holding eggs, dialing this back to 6-8 keeps the look while cutting parts.
 EggConfig.ToolVoxH = 12
 
--- How many egg tiers UP each variant shifts a brainrot. Galaxy (+3) is created but PARKED
--- (it would need eggs above Mythic), so it is intentionally absent here until new eggs exist.
-EggConfig.VariantOffset = { Normal = 0, Gold = 1, Diamond = 2 }
+-- Per-egg variant EXCLUSIONS. The Mythic egg has no base tier of its own, so it draws from the
+-- top base tier (Legendary, via its BrainrotTier) but DROPS the Normal variant — making it the
+-- premium "guaranteed shiny" egg (Gold/Diamond/Galaxy Legendary only).
+EggConfig.ExcludeVariants = {
+	Mythic = { Normal = true },
+}
 
 EggConfig.Eggs = {
 	Common = {
 		DisplayName = "Common Egg",
 		HatchCost = 15,        -- Cash to start hatching
 		Incubation = 3,        -- seconds (before incubator reduction)
-		BrainrotTier = "Common", -- (legacy/reference; the POOL below is authoritative)
+		BrainrotTier = "Common", -- the brainrot TIER this egg hatches (ALL 4 variants of it; see poolGroups)
 	},
 	Uncommon = {
 		DisplayName = "Uncommon Egg",
@@ -86,7 +93,7 @@ EggConfig.Eggs = {
 		DisplayName = "Mythic Egg",
 		HatchCost = 10000,
 		Incubation = 30,
-		BrainrotTier = "Legendary", -- unused (Mythic has no Normal brainrots); fallback only
+		BrainrotTier = "Legendary", -- Mythic has no base tier; draws Legendary but drops Normal (see ExcludeVariants)
 	},
 }
 
@@ -98,33 +105,22 @@ function EggConfig.exists(rarity: string): boolean
 	return EggConfig.Eggs[rarity] ~= nil
 end
 
-local function indexOf(list: { string }, v: string): number?
-	for i, x in ipairs(list) do
-		if x == v then
-			return i
-		end
-	end
-	return nil
-end
-
--- The pool of { tier, variant } groups obtainable from `eggRarity`. A brainrot of base tier
--- T (index ti) populates egg min(ti + variantOffset, top). E.g. the Rare egg returns
--- {Normal Rare, Gold Uncommon, Diamond Common}; the Mythic egg returns
--- {Gold Legendary, Diamond Legendary, Diamond Epic}.
+-- The pool of { tier, variant } groups an egg can hatch: EVERY variant (Normal/Gold/Diamond/
+-- Galaxy) of the egg's OWN brainrot tier (its BrainrotTier), minus any per-egg excluded variant.
+-- The per-variant ROLL ODDS (VariantConfig.Weight: Normal 80 / Gold 15 / Diamond 4 / Galaxy 1,
+-- nudged by Luck) are applied in IncubationManager.pickPoolGroup — so every egg can yield all four
+-- versions of its brainrots, with the rarer versions correspondingly rarer.
 function EggConfig.poolGroups(eggRarity: string): { { tier: string, variant: string } }
-	local e = indexOf(EggConfig.Order, eggRarity)
-	if not e then
+	local egg = EggConfig.Eggs[eggRarity]
+	if not egg then
 		return {}
 	end
-	local maxIdx = #EggConfig.Order               -- Mythic (the clamp ceiling)
-	local baseCount = maxIdx - 1                   -- base tiers = every egg EXCEPT Mythic
+	local tier = egg.BrainrotTier
+	local excluded = EggConfig.ExcludeVariants[eggRarity]
 	local groups = {}
-	for ti = 1, baseCount do
-		local baseTier = EggConfig.Order[ti]
-		for variant, off in pairs(EggConfig.VariantOffset) do
-			if math.min(ti + off, maxIdx) == e then
-				table.insert(groups, { tier = baseTier, variant = variant })
-			end
+	for _, variant in ipairs(VariantConfig.Order) do
+		if not (excluded and excluded[variant]) then
+			table.insert(groups, { tier = tier, variant = variant })
 		end
 	end
 	return groups

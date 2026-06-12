@@ -23,6 +23,7 @@ local RebirthManager = require(Managers.RebirthManager)
 local StandManager = require(Managers.StandManager)
 local LeaderboardManager = require(Managers.LeaderboardManager)
 local AdminManager = require(Managers.AdminManager)
+local Decoration = require(Managers.Decoration)
 
 -- 1. remotes
 Net.setupServer()
@@ -39,6 +40,9 @@ StandManager.init()
 -- in-world leaderboards mounted on the two zone1/2 fences (needs BaseManager.init's
 -- fences to already exist)
 LeaderboardManager.init()
+-- cosmetic poly-grass/flower scatter + the shop->dig dirt path (reads the dig slab, shop,
+-- bases & terrace caps from the world; must run AFTER BaseManager + StandManager built them)
+Decoration.init()
 
 -- inject BaseManager into managers that need to touch podium models
 IncubationManager.setBaseManager(BaseManager)

@@ -14,6 +14,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage.Shared
 local UpgradeConfig = require(Shared.Config.UpgradeConfig)
@@ -296,15 +298,64 @@ function Stands.start(gui: ScreenGui)
 		return s.LuckLevel
 	end, "UpgradeLuck")
 
+	local modalsByType = { Shovel = shovelModal, Incubator = incubatorModal, Luck = luckModal }
+
 	ProximityPromptService.PromptTriggered:Connect(function(prompt: ProximityPrompt, plr: Player)
 		if plr ~= LocalPlayer then return end
-		local t = prompt:GetAttribute("StandType")
-		if t == "Shovel" then
-			shovelModal.setVisible(true)
-		elseif t == "Incubator" then
-			incubatorModal.setVisible(true)
-		elseif t == "Luck" then
-			luckModal.setVisible(true)
+		local m = modalsByType[prompt:GetAttribute("StandType")]
+		if m then m.setVisible(true) end
+	end)
+
+	-- AUTO-OPEN: walking into a stand's interaction CIRCLE opens its panel; leaving the circle closes it.
+	type Zone = { part: BasePart, radius: number, modal: any, inside: boolean }
+	local zones: { Zone } = {}
+	local function rescanZones()
+		table.clear(zones)
+		local standsFolder = Workspace:FindFirstChild("Stands")
+		if not standsFolder then return end
+		for _, d in ipairs(standsFolder:GetDescendants()) do
+			if d:IsA("ProximityPrompt") then
+				local m = modalsByType[d:GetAttribute("StandType")]
+				local host = d.Parent
+				if m and host and host:IsA("BasePart") then
+					table.insert(zones, { part = host, radius = (d:GetAttribute("ZoneRadius") :: number?) or 12, modal = m, inside = false })
+				end
+			end
+		end
+	end
+	rescanZones()
+	if #zones == 0 then -- Stands may not have replicated yet; retry a few times without blocking
+		task.spawn(function()
+			for _ = 1, 8 do
+				task.wait(1)
+				rescanZones()
+				if #zones > 0 then break end
+			end
+		end)
+	end
+	Workspace.ChildAdded:Connect(function(c) -- StandManager.init rebuilds the Stands folder
+		if c.Name == "Stands" then
+			task.wait(0.5)
+			rescanZones()
+		end
+	end)
+
+	RunService.Heartbeat:Connect(function()
+		if #zones == 0 then return end
+		local char = LocalPlayer.Character
+		local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not root then return end
+		local p = root.Position
+		for _, z in ipairs(zones) do
+			if z.part and z.part.Parent then
+				local c = z.part.Position
+				local dx, dz = p.X - c.X, p.Z - c.Z
+				local insideNow = (dx * dx + dz * dz) <= (z.radius * z.radius)
+				if insideNow ~= z.inside then
+					z.inside = insideNow
+					z.modal.setVisible(insideNow)
+				end
+			end
 		end
 	end)
 end

@@ -65,7 +65,7 @@ ZoneConfig.Zones = {
 	-- sensible PLACEHOLDERS — rename / retheme / rebalance freely; no theme triggers flanking decor
 	-- yet (only "Forest" does), so each is just a dig pad framed by a light-gray wall + stone piles.
 	[4] = {
-		DisplayName = "The Glaziers",
+		DisplayName = "The Glaciers",
 		GroundColor = Color3.fromRGB(90, 185, 215),
 		UnlockRebirths = 3,
 		-- GLACIERS: solid #D6FFFA ice floor + scattered ice spikes + a penguin (decorateLane "Glaciers").
@@ -88,10 +88,12 @@ ZoneConfig.Zones = {
 	},
 
 	[6] = {
-		DisplayName = "Scorched Desert",
-		GroundColor = Color3.fromRGB(240, 210, 130),
+		DisplayName = "Cherry Blossom",
+		GroundColor = Color3.fromRGB(120, 205, 95),
 		UnlockRebirths = 5,
-		Theme = "Desert",
+		-- CHERRY BLOSSOM: grass floor blanketed in pink petals (grass barely showing), sakura trees
+		-- placed clear of the dig pads, + plank-and-red-lantern decor on the border walls.
+		Theme = "CherryBlossom",
 		DigOdds = { Common = 7, Uncommon = 16, Rare = 34, Epic = 27, Legendary = 11, Mythic = 5 },
 		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
 		CashScale = 25,
