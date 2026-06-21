@@ -88,8 +88,11 @@ RebirthManager.init()
 -- admin chat commands (/test) — the handler only acts for players in AdminConfig
 AdminManager.init()
 
--- RequestState lets the client pull a fresh snapshot on demand
+-- RequestState lets the client pull a fresh snapshot on demand. It's also the race-safe
+-- trigger for the one-shot offline-earnings "welcome back" screen: the client invokes this on
+-- startup once its handlers are connected, so flushing here guarantees delivery.
 Net.getFunction("RequestState").OnServerInvoke = function(player)
+	PlayerData.flushOfflineEarnings(player)
 	return PlayerData.snapshot(player)
 end
 
@@ -121,6 +124,9 @@ end
 
 local function onJoin(player: Player)
 	PlayerData.load(player)
+	-- grant earnings for the time the player was away (uses the rate/timestamp logged on their
+	-- last logoff). Must run right after load, before the snapshot is pushed below.
+	EconomyManager.applyOfflineEarnings(player)
 	BaseManager.assignBase(player)
 
 	-- faster movement + the zone-gate collision group + no player shadow, every spawn. The
@@ -144,11 +150,14 @@ local function onJoin(player: Player)
 	-- tools (defer so the Backpack exists after the profile load + base assignment).
 	task.defer(function()
 		PlayerData.push(player)
+		PlayerData.flushOfflineEarnings(player) -- backup delivery path (RequestState is the primary)
 		InventoryManager.sync(player)
 	end)
 end
 
 local function onLeave(player: Player)
+	-- log the player's offline earning rate + logoff time BEFORE the profile is saved/released.
+	EconomyManager.recordLogoff(player)
 	PlayerData.release(player)
 	BaseManager.freeBase(player)
 	DiggingManager.cleanup(player)
@@ -175,6 +184,7 @@ game:BindToClose(function()
 	end
 	for _, player in ipairs(players) do
 		task.spawn(function()
+			pcall(EconomyManager.recordLogoff, player) -- log offline rate + time on shutdown too
 			pcall(PlayerData.save, player)
 			remaining -= 1
 		end)

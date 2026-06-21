@@ -95,6 +95,15 @@ function GameConfig.eggCapacity(rebirths: number): number
 	)
 end
 
+-- OFFLINE EARNINGS: when a player leaves, the server logs their current total earning rate
+-- (cash/sec + gem/sec across their placed brainrots, already including every multiplier) times
+-- OfflineEarningFactor, plus the logoff timestamp. On their next join they're granted
+-- (logged rate × seconds offline), with the offline time capped at MaxOfflineSeconds.
+-- MaxOfflineSeconds here is just the DEFAULT — the cap is also stored PER PLAYER
+-- (profile.MaxOfflineSeconds) so it can be raised individually later (e.g. a gamepass).
+GameConfig.OfflineEarningFactor = 0.6
+GameConfig.MaxOfflineSeconds = 5 * 60 * 60 -- 5 hours
+
 -- DataStore
 GameConfig.DataStoreName = "HatchABrainrot_v1"
 GameConfig.DataStoreRetries = 4

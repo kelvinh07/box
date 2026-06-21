@@ -108,6 +108,75 @@ function EconomyManager.startIncomeLoop()
 	end)
 end
 
+----------------------------------------------------------------- offline earnings
+-- Total LIVE earning rate (cash/sec, gem/sec) across the player's PLACED brainrots. Uses
+-- BrainrotMath — the single source of truth — so every multiplier (variant, per-brainrot level,
+-- rebirth) is already baked in, exactly matching the live income loop.
+function EconomyManager.totalRate(player: Player): (number, number)
+	local p = PlayerData.get(player)
+	if not p then
+		return 0, 0
+	end
+	local cash, gems = 0, 0
+	for _, entry in ipairs(p.Collection) do
+		if entry.placed then
+			local c, g = BrainrotMath.income(entry, p.Rebirths)
+			cash += c
+			gems += g
+		end
+	end
+	return cash, gems
+end
+
+-- Called when a player LEAVES: log their offline earning rate (live rate × OfflineEarningFactor)
+-- and the logoff timestamp, so the next join can pay out time-away earnings.
+function EconomyManager.recordLogoff(player: Player)
+	local p = PlayerData.get(player)
+	if not p then
+		return
+	end
+	local cash, gems = EconomyManager.totalRate(player)
+	p.OfflineCashRate = cash * GameConfig.OfflineEarningFactor
+	p.OfflineGemRate = gems * GameConfig.OfflineEarningFactor
+	p.LastLogoffTime = os.time()
+	PlayerData.markDirty(player)
+end
+
+-- Called on JOIN: grant earnings for the time the player was away — logged offline rate × seconds
+-- offline, with the offline time CAPPED at the player's MaxOfflineSeconds. Credits Cash/Gems (and
+-- LifetimeCash for the cash portion, matching how collected income is credited) and stashes a
+-- one-shot payload for the client's "welcome back" screen (sent via PlayerData.flushOfflineEarnings).
+function EconomyManager.applyOfflineEarnings(player: Player)
+	local p = PlayerData.get(player)
+	if not p then
+		return
+	end
+	local last = p.LastLogoffTime or 0
+	if last <= 0 then
+		return -- brand new player / never logged off before
+	end
+	local elapsed = os.time() - last
+	-- consume the stamp up front so a re-load / re-request can never double-grant.
+	p.LastLogoffTime = 0
+	if elapsed <= 0 then
+		PlayerData.markDirty(player)
+		return
+	end
+	local cap = p.MaxOfflineSeconds or GameConfig.MaxOfflineSeconds
+	local seconds = math.min(elapsed, cap)
+	local cash = math.floor((p.OfflineCashRate or 0) * seconds)
+	local gems = math.floor((p.OfflineGemRate or 0) * seconds)
+	if cash <= 0 and gems <= 0 then
+		PlayerData.markDirty(player)
+		return
+	end
+	p.Cash += cash
+	p.LifetimeCash += cash
+	p.Gems += gems
+	p.__pendingOffline = { cash = cash, gems = gems } -- one-shot; stripped from saves (__ prefix)
+	PlayerData.markDirty(player)
+end
+
 ----------------------------------------------------------------- buy plot
 function EconomyManager.buyPlot(player: Player): any
 	local p = PlayerData.get(player)

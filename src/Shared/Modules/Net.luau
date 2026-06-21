@@ -19,6 +19,7 @@ Net.Events = {
 	"HatchResult",   -- one hatch outcome (for the reveal animation)
 	"FloatingText",  -- "+$" / "+Gem" world/screen popups
 	"ScreenShake",   -- juice on hatch
+	"OfflineEarnings", -- one-shot "welcome back" payload (cash/gems earned while away)
 }
 
 -- client -> server (RemoteFunctions, return success/payload)
