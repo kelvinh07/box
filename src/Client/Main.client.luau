@@ -17,6 +17,7 @@ local DigSite = require(script.Parent.DigSite)
 local WallBreak = require(script.Parent.WallBreak)
 local GrassChecker = require(script.Parent.GrassChecker)
 local InventoryClient = require(script.Parent.InventoryClient)
+local InventoryOrder = require(script.Parent.InventoryOrder)
 
 local UI = script.Parent.UI
 local Effects = require(UI.Effects)
@@ -68,6 +69,9 @@ startSafe("GrassChecker", function() GrassChecker.start() end)
 -- persistent HUD
 startSafe("TopBar", function() TopBar.build(screen) end)
 startSafe("HUD", function() HUD.build(screen) end)
+-- the shared hotbar/inventory order + drag (single source of truth for which tools are in the
+-- hotbar vs the inventory overflow) — start before the Hotbar/Inventory that render its slices.
+startSafe("InventoryOrder", function() InventoryOrder.start(screen) end)
 -- the custom bottom hotbar (visually REPLACES the default Roblox hotbar/Backpack CoreGui).
 startSafe("Hotbar", function() Hotbar.start(screen) end)
 -- the custom inventory overlay (replaces the old egg Backpack panel + Collection modal); it

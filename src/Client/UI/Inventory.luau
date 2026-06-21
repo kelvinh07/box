@@ -27,7 +27,6 @@ local Shared = ReplicatedStorage.Shared
 local EggConfig = require(Shared.Config.EggConfig)
 local RarityColors = require(Shared.Config.RarityColors)
 local BrainrotConfig = require(Shared.Config.BrainrotConfig)
-local VariantConfig = require(Shared.Config.VariantConfig)
 local BrainrotMath = require(Shared.Modules.BrainrotMath)
 local Format = require(Shared.Modules.Format)
 
@@ -35,16 +34,34 @@ local UIUtil = require(script.Parent.Parent.UIUtil)
 local ClientState = require(script.Parent.Parent.ClientState)
 local ClientNet = require(script.Parent.Parent.ClientNet)
 local ToolVisual = require(script.Parent.Parent.ToolVisual)
+local InventoryOrder = require(script.Parent.Parent.InventoryOrder)
 local Sounds = require(script.Parent.Parent.Sounds)
 
 local player = Players.LocalPlayer
 
 local Inventory = {}
 
--- highest -> lowest rarity (drives both the egg order and brainrot tie-break grouping)
-local TIER_RANK = { Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5, Mythic = 6 }
-
 local Z = 30 -- above the modals (20) so the overlay always wins
+
+-- wire a GuiObject as an inventory drop-target (sets the shared hover while the cursor is over it,
+-- so a dragged tool released here moves into the inventory overflow)
+local function invHover(obj: GuiObject)
+	obj.MouseEnter:Connect(function()
+		InventoryOrder.setHover(obj, "inventory", nil)
+	end)
+	obj.MouseLeave:Connect(function()
+		InventoryOrder.clearHover(obj)
+	end)
+end
+
+local function entryById(state: any, id: string): any?
+	for _, e in ipairs(state.Collection or {}) do
+		if e.id == id then
+			return e
+		end
+	end
+	return nil
+end
 
 -- the default Roblox "open backpack/inventory" key (grave / backtick) toggles this overlay too,
 -- so muscle memory works. One-line change if Roblox ever moves the bind.
@@ -82,7 +99,7 @@ local function baseCard(parent: Instance, order: number, borderColor: Color3): F
 	return card
 end
 
-local function makeEggCard(parent: Instance, rarity: string, count: number, order: number, onEquip: () -> ())
+local function makeEggCard(parent: Instance, tool: Tool, rarity: string, count: number, order: number, onEquip: () -> ())
 	local card = baseCard(parent, order, RarityColors.tier(rarity))
 
 	local vf = newViewport(card)
@@ -108,7 +125,7 @@ local function makeEggCard(parent: Instance, rarity: string, count: number, orde
 	})
 	badge.ZIndex = Z + 3
 
-	-- whole card is the click target (equip the egg tool)
+	-- whole card: click equips the egg tool; press-and-drag moves it to the hotbar
 	local btn = Instance.new("TextButton")
 	btn.BackgroundTransparency = 1
 	btn.Text = ""
@@ -116,11 +133,30 @@ local function makeEggCard(parent: Instance, rarity: string, count: number, orde
 	btn.ZIndex = Z + 4
 	btn.Parent = card
 	btn.MouseButton1Click:Connect(onEquip)
+	btn.MouseButton1Down:Connect(function()
+		InventoryOrder.armDrag(tool)
+	end)
+	invHover(btn)
 end
 
-local function makeBrainrotCard(parent: Instance, entry: any, rebirths: number, order: number, onEquip: () -> ())
+local function makeBrainrotCard(parent: Instance, tool: Tool, entry: any, rebirths: number, order: number, onEquip: () -> ())
 	local variantColor = RarityColors.variant(entry.variant)
 	local card = baseCard(parent, order, variantColor)
+
+	-- full-card drag handle (Z+2, BELOW the Equip/Sell buttons which sit at Z+3): press-and-drag to
+	-- move the brainrot to the hotbar; a plain click equips it. Equip/Sell win their own clicks.
+	local drag = Instance.new("TextButton")
+	drag.Name = "Drag"
+	drag.BackgroundTransparency = 1
+	drag.Text = ""
+	drag.Size = UDim2.new(1, 0, 1, 0)
+	drag.ZIndex = Z + 2
+	drag.Parent = card
+	drag.MouseButton1Down:Connect(function()
+		InventoryOrder.armDrag(tool)
+	end)
+	drag.MouseButton1Click:Connect(onEquip)
+	invHover(drag)
 
 	local name = UIUtil.label({
 		Size = UDim2.new(1, -8, 0, 26),
@@ -181,6 +217,7 @@ local function makeBrainrotCard(parent: Instance, entry: any, rebirths: number, 
 	})
 	equip.ZIndex = Z + 3
 	equip.MouseButton1Click:Connect(onEquip)
+	invHover(equip)
 
 	local sell = UIUtil.button({
 		Size = UDim2.new(0, 58, 0, 22),
@@ -197,30 +234,7 @@ local function makeBrainrotCard(parent: Instance, entry: any, rebirths: number, 
 			Sounds.play("Purchase", 0.8)
 		end
 	end)
-end
-
------------------------------------------------------------------ equip helper
-local function equipBy(predicate: (Tool) -> boolean)
-	local char = player.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not char or not hum then
-		return
-	end
-	local function find(container: Instance?): Tool?
-		if not container then
-			return nil
-		end
-		for _, c in ipairs(container:GetChildren()) do
-			if c:IsA("Tool") and predicate(c) then
-				return c
-			end
-		end
-		return nil
-	end
-	local tool = find(player:FindFirstChild("Backpack")) or find(char)
-	if tool then
-		hum:EquipTool(tool)
-	end
+	invHover(sell)
 end
 
 ----------------------------------------------------------------- panel
@@ -304,6 +318,7 @@ function Inventory.build(gui: ScreenGui)
 	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	gridLayout.Parent = grid
 	UIUtil.padding(grid, 4)
+	invHover(grid) -- dropping a dragged tool onto empty grid space moves it into the inventory
 
 	local activeFilter = "All"
 	local searchText = ""
@@ -382,65 +397,44 @@ function Inventory.build(gui: ScreenGui)
 			return
 		end
 
-		local order = 0
-		local any = false
+		-- show the OVERFLOW only: order[HOTBAR_SLOTS+1 ..]. The hotbar shows the first slots, so an
+		-- item is in the hotbar OR here, never both (mirrors the default backpack). Acquisition/slot
+		-- order — no rarity sort — so it matches the hotbar fill order + survives drag reordering.
+		local function equipTool(tool: Tool)
+			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum:EquipTool(tool)
+			end
+		end
 
-		-- EGGS: rarest -> least (EggConfig.Order is low->high, so iterate in reverse)
-		if activeFilter == "All" or activeFilter == "Eggs" then
-			for i = #EggConfig.Order, 1, -1 do
-				local rarity = EggConfig.Order[i]
-				local count = (state.Eggs and state.Eggs[rarity]) or 0
-				if count > 0 and matches(rarity .. " Egg") then
-					order += 1
-					any = true
-					makeEggCard(grid, rarity, count, order, function()
-						equipBy(function(t)
-							return t:GetAttribute("Kind") == "Egg" and t:GetAttribute("Rarity") == rarity
-						end)
+		local ord = InventoryOrder.get()
+		local pos = 0
+		for i = InventoryOrder.HOTBAR_SLOTS + 1, #ord do
+			local tool = ord[i]
+			local kind = tool:GetAttribute("Kind")
+			if kind == "Egg" and (activeFilter == "All" or activeFilter == "Eggs") then
+				local rarity = tostring(tool:GetAttribute("Rarity") or "Common")
+				if matches(rarity .. " Egg") then
+					pos += 1
+					makeEggCard(grid, tool, rarity, (state.Eggs and state.Eggs[rarity]) or 0, pos, function()
+						equipTool(tool)
+					end)
+				end
+			elseif kind == "Brainrot" and (activeFilter == "All" or activeFilter == "Brainrots") then
+				local entry = entryById(state, tostring(tool:GetAttribute("BrainrotId")))
+				if entry and matches(entry.base) then
+					pos += 1
+					makeBrainrotCard(grid, tool, entry, state.Rebirths or 0, pos, function()
+						equipTool(tool)
 					end)
 				end
 			end
 		end
 
-		-- BRAINROTS: tier DESC, then base earning (tierCash * variant.CashMult) DESC
-		if activeFilter == "All" or activeFilter == "Brainrots" then
-			-- ONLY unplaced brainrots: placed ones live on a base podium (no Tool) and are not
-			-- tracked in this overlay.
-			local list = {}
-			for _, e in ipairs(state.Collection or {}) do
-				if e.placed ~= true and matches(e.base) then
-					table.insert(list, e)
-				end
-			end
-			table.sort(list, function(a, b)
-				local ra, rb = TIER_RANK[a.tier] or 0, TIER_RANK[b.tier] or 0
-				if ra ~= rb then
-					return ra > rb
-				end
-				local tierCashA = select(1, BrainrotConfig.tierIncome(a.tier))
-				local tierCashB = select(1, BrainrotConfig.tierIncome(b.tier))
-				local va = VariantConfig.get(a.variant)
-				local vb = VariantConfig.get(b.variant)
-				local baseA = tierCashA * (va and va.CashMult or 1)
-				local baseB = tierCashB * (vb and vb.CashMult or 1)
-				return baseA > baseB
-			end)
-			for _, e in ipairs(list) do
-				order += 1
-				any = true
-				local entry = e
-				makeBrainrotCard(grid, entry, state.Rebirths or 0, order, function()
-					equipBy(function(t)
-						return t:GetAttribute("Kind") == "Brainrot" and t:GetAttribute("BrainrotId") == entry.id
-					end)
-				end)
-			end
-		end
-
-		if not any then
-			empty.Text = (activeFilter == "Eggs") and "No eggs — go dig!"
-				or (activeFilter == "Brainrots") and "No brainrots yet — hatch an egg!"
-				or "Nothing here yet — go dig & hatch!"
+		if pos == 0 then
+			empty.Text = (activeFilter == "Eggs") and "No eggs in your backpack"
+				or (activeFilter == "Brainrots") and "No brainrots in your backpack"
+				or "Backpack empty — the hotbar holds your items"
 			empty.Visible = true
 		end
 	end
@@ -466,6 +460,13 @@ function Inventory.build(gui: ScreenGui)
 	-- (ViewportFrames are not free; Cash/Gem pushes happen constantly and must not flicker it)
 	ClientState.onChanged(function(state)
 		if root.Visible and contentSig(state) ~= lastSig then
+			refresh()
+		end
+	end)
+
+	-- the hotbar/inventory split (and drag reorders) change which tools overflow here — rebuild then
+	InventoryOrder.onChanged(function()
+		if root.Visible then
 			refresh()
 		end
 	end)
