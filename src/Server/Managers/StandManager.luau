@@ -24,6 +24,9 @@ local ServerStorage = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Palette = require(ReplicatedStorage.Shared.Config.Palette)
 local Surface = require(ReplicatedStorage.Shared.Modules.Surface)
+local PixelEgg = require(ReplicatedStorage.Shared.Modules.PixelEgg)
+local RarityColors = require(ReplicatedStorage.Shared.Config.RarityColors)
+local BrainrotFactory = require(script.Parent.BrainrotFactory)
 
 local StandManager = {}
 
@@ -300,14 +303,93 @@ local function buildVendor(standType: string, title: string, pos: Vector3, paren
 end
 
 ----------------------------------------------------------------- back features (placeholders)
+-- World-space (center, size) of ONLY a model's RENDERED parts (skip the oversized invisible
+-- RootPart + transparent VFX), so we can center the brainrot horizontally on the visible animal
+-- instead of on its off-center root. Mirrors BaseManager.visibleAABB.
+local function visibleCenter(model: Model): Vector3
+	local mn: Vector3?, mx: Vector3? = nil, nil
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and d.Transparency < 0.95 and not (d == model.PrimaryPart and d.Name == "RootPart") then
+			local cf, h = d.CFrame, d.Size / 2
+			for sx = -1, 1, 2 do
+				for sy = -1, 1, 2 do
+					for sz = -1, 1, 2 do
+						local c = (cf * CFrame.new(sx * h.X, sy * h.Y, sz * h.Z)).Position
+						if not mn then
+							mn, mx = c, c
+						else
+							mn = Vector3.new(math.min(mn.X, c.X), math.min(mn.Y, c.Y), math.min(mn.Z, c.Z))
+							mx = Vector3.new(math.max(mx.X, c.X), math.max(mx.Y, c.Y), math.max(mx.Z, c.Z))
+						end
+					end
+				end
+			end
+		end
+	end
+	if mn and mx then
+		return (mn + mx) / 2
+	end
+	local cf = model:GetBoundingBox()
+	return cf.Position
+end
+
+-- The DAILY REWARD display: the game's COMMON egg cracked open with Tung Tung Tung Sahur peeking
+-- out — bottom half (cup) on the podium with the brainrot rising out of it, top half (lid) lying
+-- next to it. The brainrot reads taller than the egg and is wrapped (not clipped) by the shell.
+local DAILY_EGG_H = 7.5      -- full egg height (bottom cup half = this/2 tall; brainrot ~11 tall reads taller)
+local DAILY_EGG_VOXH = 11    -- voxel resolution of the cracked shell
 local function buildDailyReward(parent: Instance)
 	local cx, cz = PAV_CX - PAV_HALF_W / 2, PAV_CZ - PAV_HALF_L / 2 -- back-left quadrant (Q2) centre
-	makePart({ Name = "DailyPodium", Size = Vector3.new(11, 2, 7), Color = WOOD_MED, CFrame = CFrame.new(cx, FLOOR_TOP + 1, cz), Parent = parent })
-	makePart({ Name = "DailyGift", Size = Vector3.new(5, 5, 5), Color = Palette.Pink, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(cx, FLOOR_TOP + 4.5, cz), Parent = parent })
-	makePart({ Name = "Ribbon", Size = Vector3.new(5.2, 1.1, 1.2), Color = Palette.Gold, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(cx, FLOOR_TOP + 4.5, cz), Parent = parent })
-	makePart({ Name = "Ribbon", Size = Vector3.new(1.2, 1.1, 5.2), Color = Palette.Gold, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(cx, FLOOR_TOP + 4.5, cz), Parent = parent })
-	makePart({ Name = "Bow", Size = Vector3.new(1.8, 1.6, 1.8), Color = Palette.Gold, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(cx, FLOOR_TOP + 7.8, cz), Parent = parent })
-	floatingLabel("🎁 DAILY REWARD", Vector3.new(cx, FLOOR_TOP + 11, cz), parent, 230)
+	local podTop = FLOOR_TOP + 2
+	makePart({ Name = "DailyPodium", Size = Vector3.new(16, 2, 9), Color = WOOD_MED, CFrame = CFrame.new(cx, FLOOR_TOP + 1, cz), Parent = parent })
+
+	local commonColor = RarityColors.tier("Common")
+
+	-- bottom half (cup) sitting on the podium, base flush with the podium top
+	PixelEgg.buildHalf(Vector3.new(cx, podTop + DAILY_EGG_H / 2, cz), DAILY_EGG_H, commonColor, "bottom", DAILY_EGG_VOXH).Parent = parent
+
+	-- top half (lid) tipped concave-up, lying next to the cup; built at origin then dropped onto the podium
+	local lid = PixelEgg.buildHalf(Vector3.new(0, 0, 0), DAILY_EGG_H, commonColor, "top", DAILY_EGG_VOXH)
+	lid:PivotTo(CFrame.new(cx + 5.5, podTop + 5, cz + 1) * CFrame.Angles(math.rad(150), math.rad(20), 0))
+	local lcf, lsz = lid:GetBoundingBox()
+	lid:PivotTo(lid:GetPivot() - Vector3.new(0, (lcf.Y - lsz.Y / 2) - podTop, 0)) -- drop so its lowest point rests on the podium
+	lid.Parent = parent
+
+	-- Tung Tung Tung Sahur peeking out of the cup. Reuse BrainrotFactory.build (same model + size
+	-- as a podium brainrot) but strip its income billboard — this is decor, not an owned brainrot.
+	local model = BrainrotFactory.build({ id = "DailyDisplay", base = "Tung Tung Tung Sahur", variant = "Normal", tier = "Uncommon", level = 1 }, 0)
+	local lbl = model.PrimaryPart and model.PrimaryPart:FindFirstChild("InfoLabel")
+	if lbl then
+		lbl:Destroy()
+	end
+	model.Parent = parent
+	-- ground the feet (full bbox bottom) to the podium top, centered on the cup
+	local fullCf, fullSize = model:GetBoundingBox()
+	local vc = visibleCenter(model)
+	local g = model:GetPivot()
+	model:PivotTo(g.Rotation + Vector3.new(
+		cx + (g.Position.X - vc.X),
+		podTop + (g.Position.Y - (fullCf.Y - fullSize.Y / 2)),
+		cz + (g.Position.Z - vc.Z)
+	))
+
+	-- gentle IDLE: a subtle breathing bob + slow sway in place (no authored skinned-mesh idle
+	-- animation ships with these plane-rigs, so this stand-in keeps him looking alive without
+	-- risking the rig glitching through the eggshell).
+	-- ponytail: procedural idle, swap in Animator:LoadAnimation if a real idle asset is ever added.
+	local baseCF = model:GetPivot()
+	task.spawn(function()
+		local t = 0
+		while model.Parent and model.PrimaryPart do
+			t += 0.05
+			local bob = math.sin(t * 1.5) * 0.2
+			local sway = math.rad(math.sin(t) * 3)
+			model:PivotTo((baseCF * CFrame.Angles(0, sway, 0)) + Vector3.new(0, bob, 0))
+			task.wait(0.06)
+		end
+	end)
+
+	floatingLabel("🎁 DAILY REWARD", Vector3.new(cx, podTop + 16, cz), parent, 230)
 end
 
 local function buildRobuxShop(parent: Instance)
