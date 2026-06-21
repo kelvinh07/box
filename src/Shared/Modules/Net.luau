@@ -38,6 +38,7 @@ Net.Functions = {
 	"LevelBrainrot",      -- level up a single owned brainrot (Cash L2-5 / Gems L6-10)
 	"Rebirth",            -- perform a rebirth
 	"SellBrainrot",       -- sell an owned brainrot for cash
+	"EquipBest",          -- auto-place the best brainrots (by level-1 rate) onto the base podiums
 	"TeleportHome",       -- teleport the player back to their own base
 	"TeleportZone",       -- teleport the player to the middle of an UNLOCKED dig zone
 }

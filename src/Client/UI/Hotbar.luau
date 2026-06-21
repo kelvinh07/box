@@ -150,11 +150,11 @@ end
 ----------------------------------------------------------------- render
 local function render()
 	local state = ClientState.get()
-	local ord = InventoryOrder.get()
+	local hb = InventoryOrder.getHotbar()
 	local inHotbar: { [Tool]: boolean } = {}
 
-	for i = 1, math.min(#ord, MAX_SLOTS) do
-		local tool = ord[i]
+	for i = 1, #hb do
+		local tool = hb[i]
 		inHotbar[tool] = true
 		local s = slotFor(tool)
 		s.frame.LayoutOrder = i
@@ -230,15 +230,35 @@ function Hotbar.start(gui: ScreenGui)
 	-- dropping onto the bar's empty area (a fallback when not over a specific slot) appends to the
 	-- hotbar end; per-slot MouseEnter (above) overrides this with a precise slot index.
 	bar.MouseEnter:Connect(function()
-		InventoryOrder.setHover(bar, "hotbar", math.min(#InventoryOrder.get() + 1, MAX_SLOTS))
+		InventoryOrder.setHover(bar, "hotbar", math.min(#InventoryOrder.getHotbar() + 1, MAX_SLOTS))
 	end)
 	bar.MouseLeave:Connect(function()
 		InventoryOrder.clearHover(bar)
 	end)
 
 	InventoryOrder.onChanged(render)
-	ClientState.onChanged(render) -- egg badges + equipped highlight track the snapshot
+	ClientState.onChanged(render) -- egg badges track the snapshot
 	render()
+
+	-- The equipped highlight must update INSTANTLY: equipping moves a tool Character<->Backpack
+	-- WITHOUT changing the order, so onChanged never fires — re-render the moment a tool is
+	-- equipped (added to the Character) or unequipped (removed), every spawn.
+	local function watchCharacter(char: Model)
+		char.ChildAdded:Connect(function(c)
+			if c:IsA("Tool") then
+				render()
+			end
+		end)
+		char.ChildRemoved:Connect(function(c)
+			if c:IsA("Tool") then
+				render()
+			end
+		end)
+	end
+	if player.Character then
+		watchCharacter(player.Character)
+	end
+	player.CharacterAdded:Connect(watchCharacter)
 
 	-- number keys 1..9,0 toggle the matching slot; ignored when the engine consumed the input
 	-- (e.g. typing in the Inventory search box).
@@ -247,9 +267,9 @@ function Hotbar.start(gui: ScreenGui)
 			return
 		end
 		local idx = KEYS[input.KeyCode]
-		local ord = InventoryOrder.get()
-		if idx and ord[idx] then
-			toggleEquip(ord[idx])
+		local hb = InventoryOrder.getHotbar()
+		if idx and hb[idx] then
+			toggleEquip(hb[idx])
 		end
 	end)
 end

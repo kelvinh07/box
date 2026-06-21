@@ -1,13 +1,14 @@
 --!strict
 -- InventoryOrder
--- Single source of truth for WHERE each inventory Tool lives. The player's tools (real Roblox Tools
--- in Backpack/Character) are kept in ONE contiguous ordered list: order[1..HOTBAR_SLOTS] is the
--- hotbar, order[HOTBAR_SLOTS+1 ..] is the inventory overflow. So an item is in exactly ONE place
--- (hotbar OR inventory, never both), the hotbar fills first as items are acquired, and the rest
--- overflow to the backpack — mirroring Roblox's default hotbar/backpack. Drag-and-drop moves a tool
--- between the two regions (reorders the list); the Hotbar + Inventory UIs just render their slice.
--- ponytail: contiguous list (no empty hotbar gaps); drop target via MouseEnter/Leave hover tokens
--- instead of screen-coordinate + GuiInset math.
+-- Single source of truth for WHERE each inventory Tool lives: TWO ordered lists, `hotbar` (up to
+-- HOTBAR_SLOTS) and `inv` (the backpack overflow). A tool is in exactly ONE list. New tools fill the
+-- hotbar first, then overflow to the backpack. Drag-and-drop moves a tool between the lists in EITHER
+-- direction regardless of how full they are — mirroring the default Roblox hotbar/backpack:
+--   * hotbar -> inventory works even when the hotbar isn't full / the inventory is empty,
+--   * inventory -> hotbar inserts into the hotbar (swapping the occupant out when the hotbar is full).
+-- The Hotbar + Inventory UIs each render their own list.
+-- ponytail: two contiguous lists (no in-list empty gaps) — enough for "move freely between regions"
+-- without per-slot gap bookkeeping; drop target via MouseEnter/Leave hover tokens, not coordinate math.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -17,7 +18,8 @@ local player = Players.LocalPlayer
 local M = {}
 M.HOTBAR_SLOTS = 10
 
-local order: { Tool } = {}
+local hotbar: { Tool } = {}
+local inv: { Tool } = {}
 local listeners: { () -> () } = {}
 
 local function fire()
@@ -30,16 +32,29 @@ function M.onChanged(f: () -> ())
 	table.insert(listeners, f)
 end
 
-function M.get(): { Tool }
-	return order
+function M.getHotbar(): { Tool }
+	return hotbar
+end
+
+function M.getInventory(): { Tool }
+	return inv
 end
 
 local function isInvTool(c: Instance): boolean
 	return c:IsA("Tool") and c:GetAttribute("Kind") ~= nil
 end
 
--- Rebuild the order: keep present tools in their current positions, append newly-added tools
--- (Backpack then Character — deterministic so first-join/respawn isn't scrambled), prune gone ones.
+local function removeFrom(list: { Tool }, tool: Tool): boolean
+	local i = table.find(list, tool)
+	if i then
+		table.remove(list, i)
+		return true
+	end
+	return false
+end
+
+-- Reconcile both lists to the real Tools (Backpack + Character): prune gone, add new (hotbar first
+-- while it has room, then inventory). Preserves existing placements + the relative order.
 local function rescan()
 	local present: { [Tool]: boolean } = {}
 	local found: { Tool } = {}
@@ -58,41 +73,61 @@ local function rescan()
 	gather(player.Character)
 
 	local changed = false
-	local kept: { Tool } = {}
-	for _, t in ipairs(order) do
-		if present[t] then
-			kept[#kept + 1] = t
-		else
-			changed = true
+	for _, list in ipairs({ hotbar, inv }) do
+		for i = #list, 1, -1 do
+			if not present[list[i]] then
+				table.remove(list, i)
+				changed = true
+			end
 		end
 	end
 	for _, t in ipairs(found) do
-		if not table.find(kept, t) then
-			kept[#kept + 1] = t
+		if not table.find(hotbar, t) and not table.find(inv, t) then
+			if #hotbar < M.HOTBAR_SLOTS then
+				table.insert(hotbar, t)
+			else
+				table.insert(inv, t)
+			end
 			changed = true
 		end
 	end
-	order = kept
 	if changed then
 		fire()
 	end
 end
 
--- Move `tool` to position `target` (1-based), shifting the rest. Used by drag-drop.
-function M.move(tool: Tool, target: number)
-	local from = table.find(order, tool)
-	if not from then
+-- Drop `tool` onto hotbar position `slot` (1-based). Reorders within the hotbar, or pulls it in from
+-- the inventory — swapping the occupant out to the inventory only when the hotbar is already full.
+function M.dropOnHotbar(tool: Tool, slot: number?)
+	local wasHotbar = table.find(hotbar, tool) ~= nil
+	removeFrom(hotbar, tool)
+	removeFrom(inv, tool)
+	local target = math.clamp(slot or (#hotbar + 1), 1, M.HOTBAR_SLOTS)
+	if not wasHotbar and #hotbar >= M.HOTBAR_SLOTS then
+		-- hotbar full: bump whatever sits at `target` into the inventory (a swap)
+		local bumped = hotbar[math.min(target, #hotbar)]
+		if bumped then
+			removeFrom(hotbar, bumped)
+			table.insert(inv, 1, bumped)
+		end
+	end
+	table.insert(hotbar, math.clamp(target, 1, #hotbar + 1), tool)
+	fire()
+end
+
+-- Drop `tool` into the inventory. Works even when the hotbar isn't full / the inventory is empty.
+function M.dropOnInventory(tool: Tool)
+	if table.find(inv, tool) then
 		return
 	end
-	table.remove(order, from)
-	target = math.clamp(target, 1, #order + 1)
-	table.insert(order, target, tool)
+	removeFrom(hotbar, tool)
+	table.insert(inv, tool)
 	fire()
 end
 
 ----------------------------------------------------------------- drag-and-drop
--- Current drop-hover, tracked by token (the GuiObject under the cursor) so a slot's MouseLeave that
--- arrives AFTER the next slot's MouseEnter can't wipe the newer hover.
+-- Current drop-hover, tracked by token (the GuiObject under the cursor) so a stale MouseLeave that
+-- arrives after the next element's MouseEnter can't wipe the newer hover.
 local hoverToken: Instance? = nil
 local hoverKind: string? = nil
 local hoverIndex: number? = nil
@@ -115,7 +150,7 @@ local ghost: TextLabel? = nil
 local DRAG_THRESHOLD = 6
 
 -- Called by a draggable UI element on MouseButton1Down. Becomes a real drag only once the cursor
--- moves past the threshold (so a plain click still equips); a click-in-place never starts a drag.
+-- moves past the threshold, so a plain click still equips.
 function M.armDrag(tool: Tool)
 	candidate = tool
 	startPos = UserInputService:GetMouseLocation()
@@ -161,7 +196,6 @@ function M.start(screenGui: ScreenGui)
 			end)
 		end
 	end
-	-- the Backpack can appear a moment after the player; rebind whenever it (or a new character) shows
 	player.ChildAdded:Connect(function(c)
 		if c:IsA("Backpack") then
 			task.defer(bind)
@@ -196,8 +230,7 @@ function M.start(screenGui: ScreenGui)
 		end
 		if dragging and ghost then
 			local m = UserInputService:GetMouseLocation()
-			-- offset from the cursor so the cursor itself stays over the drop region (not the ghost)
-			ghost.Position = UDim2.fromOffset(m.X + 14, m.Y + 6)
+			ghost.Position = UDim2.fromOffset(m.X + 14, m.Y + 6) -- offset so the cursor stays over the drop region
 		end
 	end)
 
@@ -206,10 +239,10 @@ function M.start(screenGui: ScreenGui)
 			return
 		end
 		if dragging and candidate then
-			if hoverKind == "hotbar" and hoverIndex then
-				M.move(candidate, hoverIndex)
+			if hoverKind == "hotbar" then
+				M.dropOnHotbar(candidate, hoverIndex)
 			elseif hoverKind == "inventory" then
-				M.move(candidate, M.HOTBAR_SLOTS + 1)
+				M.dropOnInventory(candidate)
 			end
 		end
 		endDrag()

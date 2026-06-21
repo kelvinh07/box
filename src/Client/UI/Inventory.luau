@@ -159,30 +159,40 @@ local function makeBrainrotCard(parent: Instance, tool: Tool, entry: any, rebirt
 	invHover(drag)
 
 	local name = UIUtil.label({
-		Size = UDim2.new(1, -8, 0, 26),
-		Position = UDim2.new(0, 4, 0, 4),
+		Size = UDim2.new(1, -8, 0, 22),
+		Position = UDim2.new(0, 4, 0, 3),
 		Text = entry.base,
 		TextColor3 = RarityColors.tier(entry.tier),
 		Parent = card,
 	})
 	name.ZIndex = Z + 2
 
+	-- current level, shown right below the name
+	local levelLabel = UIUtil.label({
+		Size = UDim2.new(1, -8, 0, 16),
+		Position = UDim2.new(0, 4, 0, 25),
+		Text = ("Lv %d"):format(entry.level or 1),
+		TextColor3 = Color3.fromRGB(255, 235, 130),
+		Parent = card,
+	})
+	levelLabel.ZIndex = Z + 2
+
 	-- a variant-colored swatch sits UNDER the viewport so the card is never blank while the model
 	-- replicates in; it's hidden the moment the real model renders (the viewport gets a Camera).
 	local swatch = UIUtil.frame({
-		Size = UDim2.new(0, 70, 0, 70),
-		Position = UDim2.new(0.5, 0, 0, 36),
+		Size = UDim2.new(0, 60, 0, 60),
+		Position = UDim2.new(0.5, 0, 0, 46),
 		AnchorPoint = Vector2.new(0.5, 0),
 		BackgroundColor3 = (BrainrotConfig.get(entry.base) and BrainrotConfig.get(entry.base).Color) or variantColor,
 		Parent = card,
 	})
 	swatch.ZIndex = Z + 1
-	UIUtil.corner(swatch, 35)
+	UIUtil.corner(swatch, 30)
 	UIUtil.stroke(swatch, 3, variantColor)
 
 	local vf = newViewport(card)
-	vf.Size = UDim2.new(1, -16, 0, 92)
-	vf.Position = UDim2.new(0, 8, 0, 32)
+	vf.Size = UDim2.new(1, -16, 0, 80)
+	vf.Position = UDim2.new(0, 8, 0, 44)
 	-- mountBrainrot renders now AND retries into this same viewport until the model replicates.
 	mountBrainrot(vf, entry.id)
 	-- hide the placeholder once a real render lands (renderBrainrotById parents a Camera on success)
@@ -288,6 +298,25 @@ function Inventory.build(gui: ScreenGui)
 	search.Parent = root
 	UIUtil.corner(search, 10)
 	UIUtil.stroke(search, 2)
+
+	-- "Equip Best" (top bar): asks the server to auto-place the best brainrots (by level-1 rate)
+	-- onto the base podiums, returning the rest to the inventory.
+	local equipBest = UIUtil.button({
+		Name = "EquipBest",
+		Size = UDim2.new(0, 150, 0, 40),
+		Position = UDim2.new(0, 210, 0, 12),
+		BackgroundColor3 = UIUtil.Colors.Good,
+		Text = "⭐ Equip Best",
+		TextSize = 18,
+		Parent = root,
+	})
+	equipBest.ZIndex = Z + 2
+	equipBest.MouseButton1Click:Connect(function()
+		local r = ClientNet.invoke("EquipBest")
+		if r and r.ok then
+			Sounds.play("Purchase", 1.0)
+		end
+	end)
 
 	-- left filter tabs
 	local tabsHolder = UIUtil.frame({
@@ -407,10 +436,9 @@ function Inventory.build(gui: ScreenGui)
 			end
 		end
 
-		local ord = InventoryOrder.get()
+		local items = InventoryOrder.getInventory()
 		local pos = 0
-		for i = InventoryOrder.HOTBAR_SLOTS + 1, #ord do
-			local tool = ord[i]
+		for _, tool in ipairs(items) do
 			local kind = tool:GetAttribute("Kind")
 			if kind == "Egg" and (activeFilter == "All" or activeFilter == "Eggs") then
 				local rarity = tostring(tool:GetAttribute("Rarity") or "Common")

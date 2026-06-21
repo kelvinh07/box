@@ -385,6 +385,88 @@ function EconomyManager.levelBrainrot(player: Player, id: string): any
 	return { ok = true, level = target, cost = cost, currency = currency }
 end
 
+----------------------------------------------------------------- equip best
+-- Auto-fill the base podiums with the player's BEST brainrots. "Best" ranks by each brainrot's
+-- earnings AT LEVEL 1 (its tier+variant; current level is ignored, per design). The top `Plots`
+-- brainrots end up placed:
+--   * a best brainrot already on a podium STAYS in its exact slot (untouched),
+--   * a placed brainrot that doesn't make the cut is returned to the inventory,
+--   * a best brainrot sitting in the inventory is placed into a freed/empty slot.
+function EconomyManager.equipBest(player: Player): any
+	local p = PlayerData.get(player)
+	if not p then
+		return { ok = false, reason = "No profile." }
+	end
+	local plots = p.Plots or 0
+
+	-- level-1 earnings rate (level-independent; rebirth=0 keeps the ranking pure). Reuses BrainrotMath
+	-- so the number matches the rest of the game.
+	local function rate(e: any): number
+		return (select(1, BrainrotMath.income({ id = e.id, base = e.base, tier = e.tier, variant = e.variant, level = 1 }, 0)))
+	end
+
+	-- rank a COPY (don't reorder the stored Collection); the top `plots` are the "best" set
+	local ranked = table.clone(p.Collection)
+	table.sort(ranked, function(a, b)
+		return rate(a) > rate(b)
+	end)
+	local keep = math.min(plots, #ranked)
+	local best: { [string]: boolean } = {}
+	for i = 1, keep do
+		best[ranked[i].id] = true
+	end
+
+	-- 1) un-place any PLACED brainrot that isn't in the best set (return it to the inventory)
+	for _, e in ipairs(p.Collection) do
+		if e.placed and not best[e.id] then
+			e.placed = false
+			e.podium = nil
+			if accrued[player] then
+				accrued[player][e.id] = nil
+			end
+			if BaseManager then
+				BaseManager.removeBrainrot(player, e.id)
+			end
+		end
+	end
+
+	-- 2) the podiums still occupied are the KEPT best brainrots — they stay in their same slot
+	local used: { [number]: boolean } = {}
+	for _, e in ipairs(p.Collection) do
+		if e.placed and e.podium then
+			used[e.podium] = true
+		end
+	end
+	local free: { number } = {}
+	for i = 1, plots do
+		if not used[i] then
+			free[#free + 1] = i
+		end
+	end
+
+	-- 3) place the best brainrots that aren't placed yet into the free slots
+	local fi = 1
+	for i = 1, keep do
+		local e = ranked[i]
+		if not e.placed then
+			local podium = free[fi]
+			if podium then
+				fi += 1
+				e.placed = true
+				e.podium = podium
+				if BaseManager then
+					BaseManager.placeBrainrotAt(player, e, podium)
+				end
+			end
+		end
+	end
+
+	InventoryManager.sync(player)
+	PlayerData.markDirty(player)
+	PlayerData.push(player)
+	return { ok = true }
+end
+
 function EconomyManager.init()
 	Net.getFunction("BuyPlot").OnServerInvoke = function(player)
 		return EconomyManager.buyPlot(player)
@@ -397,6 +479,9 @@ function EconomyManager.init()
 	end
 	Net.getFunction("LevelBrainrot").OnServerInvoke = function(player, id)
 		return EconomyManager.levelBrainrot(player, id)
+	end
+	Net.getFunction("EquipBest").OnServerInvoke = function(player)
+		return EconomyManager.equipBest(player)
 	end
 end
 
