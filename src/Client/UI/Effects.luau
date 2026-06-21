@@ -174,6 +174,111 @@ local function hatchReveal(entry: any)
 	end)
 end
 
+----------------------------------------------------------------- offline earnings
+-- "Welcome back" screen shown once on join: how much Cash/Gems the player earned while away.
+-- Deliberately shows ONLY the amounts (never the offline time). Server sends this via the
+-- OfflineEarnings remote (see EconomyManager.applyOfflineEarnings).
+local function offlineEarnings(data: any)
+	local cash = (data and data.cash) or 0
+	local gems = (data and data.gems) or 0
+	if cash <= 0 and gems <= 0 then
+		return
+	end
+	Sounds.play("Purchase")
+
+	-- dim backdrop that blocks input behind the card until it's collected
+	local backdrop = UIUtil.frame({
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 0.5,
+		Parent = screenGui,
+	})
+	backdrop.ZIndex = 90
+
+	local card = UIUtil.frame({
+		Size = UDim2.new(0, 380, 0, 320),
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundColor3 = UIUtil.Colors.Panel,
+		Parent = screenGui,
+	})
+	card.ZIndex = 91
+	UIUtil.corner(card, 24)
+	UIUtil.stroke(card, 6, UIUtil.Colors.Accent)
+	UIUtil.gradient(card, UIUtil.Colors.PanelLight, UIUtil.Colors.Panel)
+
+	local title = UIUtil.label({
+		Size = UDim2.new(1, -20, 0, 52),
+		Position = UDim2.new(0, 10, 0.05, 0),
+		Text = "👋 WELCOME BACK!",
+		TextColor3 = UIUtil.Colors.Accent,
+		Parent = card,
+	})
+	title.ZIndex = 92
+
+	local sub = UIUtil.label({
+		Size = UDim2.new(1, -30, 0, 30),
+		Position = UDim2.new(0, 15, 0.27, 0),
+		Text = "While you were away you earned:",
+		TextScaled = false,
+		TextSize = 20,
+		Parent = card,
+	})
+	sub.ZIndex = 92
+
+	-- earning lines, stacked + centered (only the currencies that are > 0)
+	local lines = UIUtil.frame({
+		Size = UDim2.new(1, -30, 0, 110),
+		Position = UDim2.new(0.5, 0, 0.55, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundTransparency = 1,
+		Parent = card,
+	})
+	lines.ZIndex = 92
+	UIUtil.listLayout(lines, 6)
+	if cash > 0 then
+		local c = UIUtil.label({
+			Size = UDim2.new(1, 0, 0, 50),
+			Text = "+$" .. Format.short(cash),
+			TextColor3 = UIUtil.Colors.Good,
+			Parent = lines,
+		})
+		c.ZIndex = 92
+	end
+	if gems > 0 then
+		local g = UIUtil.label({
+			Size = UDim2.new(1, 0, 0, 50),
+			Text = "+" .. Format.short(gems) .. " 💎",
+			TextColor3 = UIUtil.Colors.Gem,
+			Parent = lines,
+		})
+		g.ZIndex = 92
+	end
+
+	local btn = UIUtil.button({
+		Size = UDim2.new(0, 200, 0, 56),
+		Position = UDim2.new(0.5, 0, 0.86, 0),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundColor3 = UIUtil.Colors.Good,
+		Text = "Collect",
+		Parent = card,
+	})
+	btn.ZIndex = 92
+	btn.MouseButton1Click:Connect(function()
+		local t = TweenService:Create(card, TweenInfo.new(0.25), {
+			Size = UDim2.new(0, 0, 0, 0),
+			BackgroundTransparency = 1,
+		})
+		t.Completed:Connect(function()
+			card:Destroy()
+			backdrop:Destroy()
+		end)
+		t:Play()
+	end)
+
+	UIUtil.pop(card)
+end
+
 ----------------------------------------------------------------- screen shake
 local function screenShake(variant: string?)
 	local cam = Workspace.CurrentCamera
@@ -206,6 +311,7 @@ function Effects.build(gui: ScreenGui)
 	Net.getEvent("FloatingText").OnClientEvent:Connect(floatingText)
 	Net.getEvent("HatchResult").OnClientEvent:Connect(hatchReveal)
 	Net.getEvent("ScreenShake").OnClientEvent:Connect(screenShake)
+	Net.getEvent("OfflineEarnings").OnClientEvent:Connect(offlineEarnings)
 end
 
 -- exposed so other panels can throw a quick toast on remote failure

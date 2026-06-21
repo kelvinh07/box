@@ -56,6 +56,14 @@ local function defaultProfile()
 		-- placed=true => sits on a base podium and EARNS income; placed=false => held
 		-- in the inventory/Backpack (a Tool). podium = 1..Plots index when placed, nil otherwise.
 		Collection = {},
+		-- OFFLINE EARNINGS: rate (per second, already × OfflineEarningFactor) logged when the player
+		-- last left, the logoff timestamp (os.time; 0 = never logged off), and the PER-PLAYER cap on
+		-- how long offline earnings accrue (defaults from GameConfig; can be raised per player later).
+		-- See EconomyManager.recordLogoff / applyOfflineEarnings.
+		OfflineCashRate = 0,
+		OfflineGemRate = 0,
+		LastLogoffTime = 0,
+		MaxOfflineSeconds = GameConfig.MaxOfflineSeconds,
 		Version = 1,
 	}
 end
@@ -345,6 +353,24 @@ function PlayerData.snapshot(player: Player): any?
 		-- Cash to break the wall into the NEXT zone (0 once at the last zone).
 		NextZoneCost = ZoneConfig.unlockCash(p.CurrentZone + 1),
 	}
+end
+
+-- Send the one-shot "welcome back" offline-earnings payload (stashed by
+-- EconomyManager.applyOfflineEarnings) to the client, exactly once. Called from BOTH the join
+-- push and the RequestState handler so it survives the join race: whichever fires first wins
+-- (the payload is cleared on send), and RequestState is client-initiated so the client's handler
+-- is guaranteed connected by then.
+function PlayerData.flushOfflineEarnings(player: Player)
+	local p = cache[player]
+	if not p then
+		return
+	end
+	local pending = p.__pendingOffline
+	if not pending then
+		return
+	end
+	p.__pendingOffline = nil
+	Net.getEvent("OfflineEarnings"):FireClient(player, pending)
 end
 
 function PlayerData.push(player: Player)
