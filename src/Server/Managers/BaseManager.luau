@@ -131,7 +131,7 @@ local SEALED_WALL_HALF_X = LANE_SIDE_INNER_X - 14  -- = 86 (ends inside the ston
 local LANE_SIDE_Z_START = 72
 -- The walls pre-extend to frame this MANY zones, not just the current ZoneConfig.MaxZone,
 -- so FUTURE zones are already walled. Bump this (and the ground size) as you add zones.
-local LANE_SIDE_PLANNED_ZONES = 8 -- frame all 8 zones down the lane (keep in sync with ZoneConfig.MaxZone + the MapBuilder ground size)
+local LANE_SIDE_PLANNED_ZONES = 12 -- frame all 12 zones down the lane (keep in sync with ZoneConfig.MaxZone + the MapBuilder ground size)
 
 -- LOBBY ENCLOSURE WALL (buildLobbyWall): a THREE-TIER dirt-cliff + grass-cap rampart (SAME studded
 -- border style as the lane side walls) that SURROUNDS the whole starting lobby. NOT a smooth arc —
@@ -1365,6 +1365,8 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 		solidFloor = Palette.CherryFloor -- solid PINK floor; the petal carpet adds texture on top
 	elseif theme == "Haunted" then
 		solidFloor = Palette.HauntedFloor -- #6B5D2F murky olive graveyard floor (zone 7)
+	elseif theme == "City" then
+		solidFloor = Palette.CityRoad -- dark asphalt — the two-way road floor (zone 8)
 	end
 
 	-- Dig plate colour: FOREST = grassy clearing, solid-floor zones = their sand/ice colour, else =
@@ -3462,6 +3464,157 @@ local function buildHauntedDecor(zone: number, centerZ: number)
 	buildCobwebStrands(centerZ)
 end
 
+------------------------------------------------------------- CITY (zone 8)
+-- A real-looking city STREET hiding the border cliffs: thick-cardboard building FACADES (bakery /
+-- deli / towers …) packed along both border walls, at least as tall as the walls, + an asphalt
+-- TWO-WAY ROAD on the floor running toward the next zone.
+local CITY_WALLS = {
+	Color3.fromRGB(198, 96, 82),   -- brick red
+	Color3.fromRGB(214, 198, 168), -- tan stone
+	Color3.fromRGB(150, 166, 186), -- blue-grey concrete
+	Color3.fromRGB(120, 152, 176), -- steel blue
+	Color3.fromRGB(206, 174, 122), -- sandstone
+	Color3.fromRGB(176, 184, 196), -- light concrete
+	Color3.fromRGB(120, 174, 152), -- mint
+}
+local CITY_AWNINGS = {
+	Color3.fromRGB(214, 64, 64), Color3.fromRGB(64, 150, 220),
+	Color3.fromRGB(80, 184, 92), Color3.fromRGB(236, 172, 60),
+}
+local CITY_SHOPS = { "BAKERY", "DELI", "CAFE", "MARKET", "PIZZA", "BANK", "HOTEL", "BOOKS", "DINER", "TOYS", "SUBS", "FLORIST" }
+
+-- a flat ROAD MARKING slab lying just above the asphalt floor (non-collidable), optional yaw.
+local function roadMark(x: number, z: number, sx: number, sz: number, color: Color3, surfaceY: number, yawDeg: number?)
+	local cf = CFrame.new(MapBuilder.DigCenter.X + x, surfaceY + 0.12, z)
+	if yawDeg then
+		cf = cf * CFrame.Angles(0, math.rad(yawDeg), 0)
+	end
+	makePart({
+		Name = "RoadMark", NoStuds = true, Material = Enum.Material.SmoothPlastic,
+		Size = Vector3.new(sx, 0.2, sz), Color = color, CanCollide = false, CastShadow = false,
+		CFrame = cf, Parent = laneFolder,
+	})
+end
+
+-- a forward CHEVRON arrow (points +Z, toward the next zone) centred at (x, z)
+local function roadArrow(x: number, z: number, surfaceY: number)
+	roadMark(x, z, 0.9, 6, Palette.RoadWhite, surfaceY)               -- shaft
+	for _, s in ipairs({ -1, 1 }) do
+		roadMark(x + s * 1.05, z + 2.0, 0.9, 4.2, Palette.RoadWhite, surfaceY, s * 38) -- chevron arms
+	end
+end
+
+-- a CITY SIGN board with shop text mounted on a building front, facing the zone centre.
+local function buildCitySign(faceX: number, y: number, z: number, sign: number, text: string)
+	local board = makePart({
+		Name = "CitySign", NoStuds = true, Material = Enum.Material.SmoothPlastic,
+		Size = Vector3.new(0.5, 2.8, 8.5), Color = Color3.fromRGB(34, 34, 42),
+		CanCollide = false, CFrame = CFrame.new(faceX, y, z), Parent = laneFolder,
+	})
+	local sg = Instance.new("SurfaceGui")
+	sg.Name = "SignGui"
+	sg.Face = (sign > 0) and Enum.NormalId.Left or Enum.NormalId.Right -- the face toward zone centre
+	sg.CanvasSize = Vector2.new(900, 240)
+	sg.LightInfluence = 0
+	sg.Parent = board
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.fromScale(1, 1)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.FredokaOne
+	lbl.TextScaled = true
+	lbl.Text = text
+	lbl.TextColor3 = Color3.fromRGB(255, 240, 180)
+	lbl.TextStrokeTransparency = 0.2
+	lbl.Parent = sg
+end
+
+-- one THICK-CARDBOARD building facade against a side cliff (sign = -1 left / +1 right), centred at z.
+local function buildCityBuilding(sign: number, z: number, w: number, h: number, color: Color3, shop: string)
+	local cx = MapBuilder.DigCenter.X
+	local D = 7 -- cardboard thickness — reads as a real 3D building, not a flat poster
+	local bodyX = cx + sign * (LANE_SIDE_INNER_X - D / 2) -- body centre (back flush with the cliff face)
+	local frontX = cx + sign * (LANE_SIDE_INNER_X - D)    -- inner (zone-facing) wall face
+	local faceX = frontX - sign * 0.18                    -- a hair proud of the front (windows/trim/sign)
+	-- body + a darker roof parapet lip
+	makePart({ Name = "CityBuilding", Size = Vector3.new(D, h, w), Color = color, CFrame = CFrame.new(bodyX, 1 + h / 2, z), Parent = laneFolder })
+	makePart({ Name = "CityParapet", Size = Vector3.new(D + 0.8, 2, w + 0.8), Color = color:Lerp(Color3.new(0, 0, 0), 0.28), CFrame = CFrame.new(bodyX, 1 + h + 1, z), Parent = laneFolder })
+	-- ground-floor storefront band (darker) + door + flanking shop windows + awning + sign
+	local groundH = 9
+	makePart({ Name = "CityStorefront", Size = Vector3.new(D + 0.3, groundH, w), Color = color:Lerp(Color3.new(0, 0, 0), 0.42), CFrame = CFrame.new(bodyX, 1 + groundH / 2, z), Parent = laneFolder })
+	makePart({ Name = "CityDoor", NoStuds = true, Size = Vector3.new(0.3, groundH - 2.5, 3), Color = Color3.fromRGB(58, 44, 36), CanCollide = false, CFrame = CFrame.new(faceX, 1 + (groundH - 2.5) / 2, z), Parent = laneFolder })
+	for _, dz in ipairs({ -1, 1 }) do
+		makePart({ Name = "CityShopWin", NoStuds = true, Material = Enum.Material.Glass, Transparency = 0.3,
+			Size = Vector3.new(0.3, groundH - 4, w * 0.26), Color = Color3.fromRGB(150, 210, 230), CanCollide = false,
+			CFrame = CFrame.new(faceX, 1 + (groundH - 4) / 2 + 0.6, z + dz * (w * 0.28)), Parent = laneFolder })
+	end
+	makePart({ Name = "CityAwning", NoStuds = true, Material = Enum.Material.SmoothPlastic,
+		Size = Vector3.new(3.0, 0.5, w * 0.92), Color = CITY_AWNINGS[decorRng:NextInteger(1, #CITY_AWNINGS)],
+		CanCollide = false, CFrame = CFrame.new(frontX - sign * 1.4, 1 + groundH + 0.3, z), Parent = laneFolder })
+	buildCitySign(faceX, 1 + groundH + 2.4, z, sign, shop)
+	-- upper-floor WINDOW grid (some lit), painted on the front face
+	local cols = math.max(2, math.floor(w / 7))
+	local rows = math.max(1, math.floor((h - groundH - 5) / 5))
+	local colStep = w / cols
+	for r = 0, rows - 1 do
+		for c = 0, cols - 1 do
+			local wy = 1 + groundH + 3.5 + r * 5
+			local wz = z - w / 2 + colStep * (c + 0.5)
+			local lit = decorRng:NextNumber() < 0.45
+			makePart({
+				Name = "CityWindow", NoStuds = true,
+				Material = lit and Enum.Material.Neon or Enum.Material.SmoothPlastic,
+				Size = Vector3.new(0.3, 2.8, colStep * 0.5),
+				Color = lit and Color3.fromRGB(255, 232, 150) or Color3.fromRGB(70, 96, 124),
+				CanCollide = false, CastShadow = false,
+				CFrame = CFrame.new(faceX, wy, wz), Parent = laneFolder,
+			})
+		end
+	end
+end
+
+-- the CITY street: paint the two-way road + pack BOTH border walls with cardboard building facades.
+local function buildCityDecor(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local surfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2
+	local wallTop = 1 + LANE_SIDE_BODY_H + LANE_SIDE_CAP_H -- ~48: every building reaches AT LEAST this
+	local z0 = centerZ - (LANE_STEP / 2 - 2)
+	local z1 = centerZ + (LANE_STEP / 2 - 2)
+	local roadLen = z1 - z0
+
+	-- ROAD markings (run along the lane / +Z toward the next zone): double-yellow centre, white solid
+	-- edges, dashed lane dividers, and forward arrows in each lane.
+	roadMark(-1.1, centerZ, 0.7, roadLen, Palette.RoadYellow, surfaceY)
+	roadMark(1.1, centerZ, 0.7, roadLen, Palette.RoadYellow, surfaceY)
+	for _, sidex in ipairs({ -1, 1 }) do
+		roadMark(sidex * 74, centerZ, 0.8, roadLen, Palette.RoadWhite, surfaceY) -- solid edge line
+		local dz = z0 + 5 -- dashed lane divider
+		while dz < z1 do
+			roadMark(sidex * 38, dz, 0.6, 5, Palette.RoadWhite, surfaceY)
+			dz = dz + 11
+		end
+		roadArrow(sidex * 19, centerZ - 22, surfaceY) -- forward arrows, one per lane × 2
+		roadArrow(sidex * 19, centerZ + 26, surfaceY)
+		roadArrow(sidex * 56, centerZ + 2, surfaceY)
+		-- SIDEWALK strip in front of the buildings (light concrete, slightly raised)
+		makePart({ Name = "CitySidewalk", Size = Vector3.new(16, 1, roadLen), Color = Palette.CitySidewalk,
+			CFrame = CFrame.new(cx + sidex * (LANE_SIDE_INNER_X - 8), surfaceY + 0.3, centerZ), Parent = laneFolder })
+	end
+
+	-- BUILDINGS: fill each side wall edge-to-edge with varied facades, each ≥ the wall height
+	for _, sign in ipairs({ -1, 1 }) do
+		local z = z0 + 2
+		while z < z1 - 8 do
+			local w = decorRng:NextInteger(14, 24)
+			if z + w > z1 - 2 then w = (z1 - 2) - z end
+			if w < 9 then break end
+			local h = wallTop + decorRng:NextInteger(2, 26) -- AT LEAST the wall height; some skyscrapers
+			buildCityBuilding(sign, z + w / 2, w, h,
+				CITY_WALLS[decorRng:NextInteger(1, #CITY_WALLS)], CITY_SHOPS[decorRng:NextInteger(1, #CITY_SHOPS)])
+			z = z + w + decorRng:NextInteger(0, 1)
+		end
+	end
+end
+
 	for k = 1, ZoneConfig.MaxZone - 1 do
 		local wz = LANE_START + (k - 1) * LANE_STEP + LANE_STEP / 2
 		if k == 1 then
@@ -3507,6 +3660,10 @@ end
 			-- HAUNTED HOLLOW: dead trees + jack-o-lanterns scattered around the zone (no-dig ringed)
 			-- + cobweb strings strung border-to-border overhead in sagging parabolas.
 			buildHauntedDecor(z, LANE_START + (z - 1) * LANE_STEP)
+		elseif data and data.Theme == "City" then
+			-- CITY: a two-way asphalt road toward the next zone + thick-cardboard building facades
+			-- (bakery / deli / towers …) lining both border walls, taller than the walls.
+			buildCityDecor(z, LANE_START + (z - 1) * LANE_STEP)
 		end
 	end
 end

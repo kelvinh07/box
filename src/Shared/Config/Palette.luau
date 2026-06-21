@@ -39,6 +39,11 @@ local Palette = {
 	DeadWood     = Color3.fromRGB(92, 78, 64),    -- bare grey-brown dead-tree bark
 	Pumpkin      = Color3.fromRGB(255, 124, 24),  -- vivid jack-o-lantern orange
 	Web          = Color3.fromRGB(224, 228, 234), -- pale cobweb silk
+	-- CITY (zone 8) — asphalt two-way road + thick-cardboard building facades on the border walls
+	CityRoad     = Color3.fromRGB(74, 78, 88),    -- dark asphalt road floor
+	CitySidewalk = Color3.fromRGB(176, 180, 188), -- light concrete sidewalk
+	RoadYellow   = Color3.fromRGB(255, 206, 64),  -- centre-line yellow
+	RoadWhite    = Color3.fromRGB(238, 240, 245), -- lane/edge line + arrow white
 	Incubator = Color3.fromRGB(72, 116, 245),   -- vivid blue incubator body
 	LockRed   = Color3.fromRGB(255, 58, 86),    -- vivid red (locked staircase barrier)
 	Pink      = Color3.fromRGB(255, 80, 175),

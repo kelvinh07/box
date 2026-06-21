@@ -138,13 +138,13 @@ function MapBuilder.build()
 	-- big bright STUDDED grass ground (classic stud texture, like dirt/walls/bases). Tagged
 	-- GrassSurface so Client/GrassChecker overlays the 6x6 two-green checker ON TOP of the
 	-- studs (the studs still read through the overlay).
-	-- sized + centered to span the lobby (z ~ -250) down the full 8-zone lane (z ~ 1120).
+	-- sized + centered to span the lobby (z ~ -250) down the full 12-zone lane (z ~ 1720).
 	-- Grow this whenever ZoneConfig.MaxZone / BaseManager.LANE_SIDE_PLANNED_ZONES grow.
 	local ground = makePart({
 		Name = "Ground",
-		Size = Vector3.new(1200, 2, 1700),
+		Size = Vector3.new(1200, 2, 2500),
 		Color = Palette.Grass,
-		CFrame = CFrame.new(0, 0, 435),
+		CFrame = CFrame.new(0, 0, 640),
 		Parent = folder,
 	})
 	CollectionService:AddTag(ground, "GrassSurface")

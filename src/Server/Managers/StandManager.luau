@@ -6,7 +6,7 @@
 -- back row of daily-reward / robux features:
 --   • LEFT  (-X) : 🪓 Shovel vendor   -> StandType "Shovel"
 --   • RIGHT (+X) : 🔥 Incubator vendor -> StandType "Incubator"
---   • BACK  (-Z) : 🎁 Daily Reward + 💎 Robux Shop (VISUAL placeholders — extend later)
+--   • BACK  (-Z) : 🎁 Daily Reward + a pixel-built OP Incubator & OP Shovel display (VISUAL)
 --
 -- The VENDORS are JUST the character extracted from the imported ServerStorage.ShopModel (the
 -- market-stall shed is discarded) plus an INSTANT ProximityPrompt (press E, no hold) carrying a
@@ -392,15 +392,182 @@ local function buildDailyReward(parent: Instance)
 	floatingLabel("🎁 DAILY REWARD", Vector3.new(cx, podTop + 16, cz), parent, 230)
 end
 
-local function buildRobuxShop(parent: Instance)
-	local cx, cz = PAV_CX + PAV_HALF_W / 2, PAV_CZ - PAV_HALF_L / 2 -- back-right quadrant (Q1) centre
-	makePart({ Name = "RobuxCounter", Size = Vector3.new(16, 2, 7), Color = WOOD_MED, CFrame = CFrame.new(cx, FLOOR_TOP + 1, cz), Parent = parent })
-	for i = -1, 1 do
-		local px = cx + i * 5
-		makePart({ Name = "RobuxPedestal", Size = Vector3.new(2.6, 3, 2.6), Color = Palette.Podium, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(px, FLOOR_TOP + 3.5, cz), Parent = parent })
-		makePart({ Name = "RobuxToken", Size = Vector3.new(2, 2, 2), Color = Palette.Lime, Material = Enum.Material.Neon, CanCollide = false, NoStuds = true, CFrame = CFrame.new(px, FLOOR_TOP + 6, cz) * CFrame.Angles(0, math.rad(35), 0), Parent = parent })
+----------------------------------------------------------------- OP shop (pixel Incubator + Shovel)
+-- One clean PIXEL/voxel cube — built like the dug eggs (smooth cube, NOT studded); neon if `neon`.
+local function pixelCube(size: number, cf: CFrame, color: Color3, parent: Instance, neon: boolean?): BasePart
+	return makePart({
+		Name = "Pixel",
+		Size = Vector3.new(size, size, size),
+		Color = color,
+		Material = neon and Enum.Material.Neon or Enum.Material.SmoothPlastic,
+		NoStuds = true,
+		CanCollide = false,
+		CastShadow = false,
+		CFrame = cf,
+		Parent = parent,
+	})
+end
+
+-- Build a flat voxel sprite from a char grid (row 1 = TOP), extruded `depth` voxels in Z and centred
+-- on `baseCF`. `colors` / `neon` map each non-blank char to a colour / glow flag.
+local function buildPixelGrid(rows: { string }, colors: { [string]: Color3 }, neon: { [string]: boolean }?, voxel: number, baseCF: CFrame, depth: number, parent: Instance)
+	local h = #rows
+	local w = 0
+	for _, r in ipairs(rows) do
+		w = math.max(w, #r)
 	end
-	floatingLabel("💎 ROBUX SHOP", Vector3.new(cx, FLOOR_TOP + 11, cz), parent, 230)
+	for ry = 1, h do
+		local row = rows[ry]
+		for c = 1, #row do
+			local ch = row:sub(c, c)
+			if ch ~= " " and ch ~= "." then
+				local color = colors[ch] or Color3.new(1, 1, 1)
+				local isNeon = (neon ~= nil) and neon[ch] or false
+				local lx = (c - (w + 1) / 2) * voxel
+				local ly = ((h - ry) - (h - 1) / 2) * voxel
+				for d = 1, depth do
+					local lz = (d - (depth + 1) / 2) * voxel
+					pixelCube(voxel * 0.95, baseCF * CFrame.new(lx, ly, lz), color, parent, isNeon)
+				end
+			end
+		end
+	end
+end
+
+-- "insane" juice on a part: classic Sparkles + a coloured glow light.
+local function addJuice(part: BasePart, color: Color3, brightness: number, range: number)
+	local s = Instance.new("Sparkles")
+	s.SparkleColor = color
+	s.Parent = part
+	local light = Instance.new("PointLight")
+	light.Color = color
+	light.Brightness = brightness
+	light.Range = range
+	light.Shadows = false
+	light.Parent = part
+end
+
+-- a glowing neon display PEDESTAL the OP item floats above
+local function opPedestal(cx: number, cz: number, w: number, parent: Instance)
+	makePart({ Name = "OpPedestal", Size = Vector3.new(w, 3, w), Color = Palette.Podium, Material = Enum.Material.Neon, NoStuds = true, CanCollide = false, CFrame = CFrame.new(cx, FLOOR_TOP + 2.5, cz), Parent = parent })
+end
+
+-- OP INCUBATOR: a blocky pixel-cube CAGE (echoing the plot glass incubator, but voxel-built) with a
+-- glowing pixel EGG spinning + bobbing inside a translucent glass aura, plus sparkles + a glow light.
+local function buildPixelIncubator(cx: number, cz: number, parent: Instance)
+	local model = Instance.new("Model")
+	model.Name = "OpIncubator"
+	model.Parent = parent
+	opPedestal(cx, cz, 8, model)
+
+	local V = 1.0
+	local baseY = FLOOR_TOP + 4 -- pedestal top
+	-- base + roof slabs (3x3) + 4 corner posts => an open blocky display cage
+	for ix = -1, 1 do
+		for iz = -1, 1 do
+			pixelCube(V * 0.95, CFrame.new(cx + ix * V, baseY + V / 2, cz + iz * V), Palette.Incubator, model)
+		end
+	end
+	local postH = 6
+	for _, sx in ipairs({ -1, 1 }) do
+		for _, sz in ipairs({ -1, 1 }) do
+			for k = 1, postH do
+				pixelCube(V * 0.95, CFrame.new(cx + sx * V, baseY + V + (k - 0.5) * V, cz + sz * V), Palette.BaseTrim, model)
+			end
+		end
+	end
+	local topY = baseY + V + postH * V
+	for ix = -1, 1 do
+		for iz = -1, 1 do
+			pixelCube(V * 0.95, CFrame.new(cx + ix * V, topY + V / 2, cz + iz * V), Palette.Incubator, model)
+		end
+	end
+
+	local cavityCy = baseY + V + postH * V / 2
+	makePart({ Name = "GlassAura", Size = Vector3.new(3.0, postH * V, 3.0), Color = Palette.Glass, Material = Enum.Material.Neon, Transparency = 0.62, NoStuds = true, CanCollide = false, CastShadow = false, CFrame = CFrame.new(cx, cavityCy, cz), Parent = model })
+	local fx = makePart({ Name = "Fx", Size = Vector3.new(1, 1, 1), Transparency = 1, NoStuds = true, CanCollide = false, CFrame = CFrame.new(cx, cavityCy, cz), Parent = model })
+	addJuice(fx, Palette.Cyan, 3, 18)
+
+	-- glowing pixel egg inside (same egg style as the dug eggs), spinning + bobbing
+	local egg = PixelEgg.build(Vector3.new(cx, cavityCy, cz), 4.5, Color3.fromRGB(150, 235, 255), 7)
+	for _, d in ipairs(egg:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Material = Enum.Material.Neon -- make the inner egg GLOW
+			d.CanCollide = false
+			d.CastShadow = false
+		end
+	end
+	egg.Parent = model
+
+	floatingLabel("🔥 OP INCUBATOR", Vector3.new(cx, topY + 5, cz), parent, 240)
+
+	task.spawn(function()
+		local t = 0
+		while egg.Parent and egg.PrimaryPart do
+			t += 0.08
+			egg:PivotTo(CFrame.new(cx, cavityCy + math.sin(t * 2) * 0.45, cz) * CFrame.Angles(0, t * 1.5, 0))
+			task.wait(0.08)
+		end
+	end)
+end
+
+-- OP SHOVEL: a pixel-cube shovel (metal handle + glowing gold spade) floating + slow-spinning above a
+-- pedestal, with sparkles + a glow light.
+-- VOXEL DATA baked from the imported reference "shovel" model (faithful pixelation). nW/nT = grid
+-- width/thickness; PALETTE = the reference's own colours (metal blade + wood handle). VOX is a packed
+-- "h w d c" stream: h = height (0 = blade bottom), w = 0..nW-1, d = 0..nT-1, c = palette index.
+local OP_SHOVEL_NW, OP_SHOVEL_NT = 10, 3
+local OP_SHOVEL_PALETTE = { Color3.fromRGB(99, 95, 98), Color3.fromRGB(108, 88, 75) } -- 1=metal, 2=wood
+local OP_SHOVEL_VOX = "33 4 0 1 33 5 0 1 33 4 1 1 33 5 1 1 33 4 2 1 33 5 2 1 32 4 0 1 32 5 0 1 32 4 1 1 32 5 1 1 31 4 0 2 31 5 0 2 31 4 1 2 31 5 1 2 30 4 0 2 30 5 0 2 30 4 1 2 30 5 1 2 29 4 0 2 29 5 0 2 29 4 1 2 29 5 1 2 28 4 0 2 28 5 0 2 28 4 1 2 28 5 1 2 27 4 0 2 27 5 0 2 27 4 1 2 27 5 1 2 26 4 0 2 26 5 0 2 26 4 1 2 26 5 1 2 25 4 0 2 25 5 0 2 25 4 1 2 25 5 1 2 24 4 0 2 24 5 0 2 24 4 1 2 24 5 1 2 23 4 0 2 23 5 0 2 23 4 1 2 23 5 1 2 22 4 0 2 22 5 0 2 22 4 1 2 22 5 1 2 21 4 0 2 21 5 0 2 21 4 1 2 21 5 1 2 20 4 0 2 20 5 0 2 20 4 1 2 20 5 1 2 19 4 0 2 19 5 0 2 19 4 1 2 19 5 1 2 18 4 0 2 18 5 0 2 18 4 1 2 18 5 1 2 17 4 0 2 17 5 0 2 17 4 1 2 17 5 1 2 16 4 0 2 16 5 0 2 16 4 1 2 16 5 1 2 15 4 0 2 15 5 0 2 15 4 1 2 15 5 1 2 14 4 0 2 14 5 0 2 14 4 1 2 14 5 1 2 13 4 0 1 13 5 0 1 13 4 1 1 13 5 1 1 13 4 2 1 13 5 2 1 12 3 0 1 12 4 0 1 12 5 0 1 12 6 0 1 12 3 1 1 12 4 1 1 12 5 1 1 12 6 1 1 12 4 2 1 12 5 2 1 11 0 0 1 11 1 0 1 11 2 0 1 11 3 0 1 11 4 0 1 11 5 0 1 11 6 0 1 11 7 0 1 11 8 0 1 11 9 0 1 11 0 1 1 11 1 1 1 11 2 1 1 11 3 1 1 11 4 1 1 11 5 1 1 11 6 1 1 11 7 1 1 11 8 1 1 11 9 1 1 10 0 0 1 10 1 0 1 10 2 0 1 10 3 0 1 10 4 0 1 10 5 0 1 10 6 0 1 10 7 0 1 10 8 0 1 10 9 0 1 10 0 1 1 10 1 1 1 10 2 1 1 10 3 1 1 10 4 1 1 10 5 1 1 10 6 1 1 10 7 1 1 10 8 1 1 10 9 1 1 9 0 0 1 9 1 0 1 9 2 0 1 9 3 0 1 9 4 0 1 9 5 0 1 9 6 0 1 9 7 0 1 9 8 0 1 9 9 0 1 9 0 1 1 9 1 1 1 9 2 1 1 9 3 1 1 9 4 1 1 9 5 1 1 9 6 1 1 9 7 1 1 9 8 1 1 9 9 1 1 8 0 0 1 8 1 0 1 8 2 0 1 8 3 0 1 8 4 0 1 8 5 0 1 8 6 0 1 8 7 0 1 8 8 0 1 8 9 0 1 8 0 1 1 8 1 1 1 8 2 1 1 8 3 1 1 8 4 1 1 8 5 1 1 8 6 1 1 8 7 1 1 8 8 1 1 8 9 1 1 7 0 0 1 7 1 0 1 7 2 0 1 7 3 0 1 7 5 0 1 7 6 0 1 7 7 0 1 7 8 0 1 7 9 0 1 7 0 1 1 7 1 1 1 7 2 1 1 7 3 1 1 7 4 1 1 7 5 1 1 7 6 1 1 7 7 1 1 7 8 1 1 7 9 1 1 6 0 0 1 6 1 0 1 6 2 0 1 6 3 0 1 6 6 0 1 6 7 0 1 6 8 0 1 6 9 0 1 6 0 1 1 6 1 1 1 6 2 1 1 6 3 1 1 6 4 1 1 6 5 1 1 6 6 1 1 6 7 1 1 6 8 1 1 6 9 1 1 5 0 0 1 5 1 0 1 5 2 0 1 5 3 0 1 5 4 0 1 5 5 0 1 5 6 0 1 5 7 0 1 5 8 0 1 5 9 0 1 5 0 1 1 5 1 1 1 5 2 1 1 5 3 1 1 5 4 1 1 5 5 1 1 5 6 1 1 5 7 1 1 5 8 1 1 5 9 1 1 4 0 0 1 4 1 0 1 4 2 0 1 4 3 0 1 4 4 0 1 4 5 0 1 4 6 0 1 4 7 0 1 4 8 0 1 4 9 0 1 4 0 1 1 4 1 1 1 4 2 1 1 4 3 1 1 4 4 1 1 4 5 1 1 4 6 1 1 4 7 1 1 4 8 1 1 4 9 1 1 3 0 0 1 3 1 0 1 3 2 0 1 3 3 0 1 3 4 0 1 3 5 0 1 3 6 0 1 3 7 0 1 3 8 0 1 3 9 0 1 3 0 1 1 3 1 1 1 3 2 1 1 3 3 1 1 3 4 1 1 3 5 1 1 3 6 1 1 3 7 1 1 3 8 1 1 2 1 0 1 2 2 0 1 2 3 0 1 2 4 0 1 2 5 0 1 2 6 0 1 2 7 0 1 2 8 0 1 2 1 1 1 2 2 1 1 2 3 1 1 2 4 1 1 2 5 1 1 2 6 1 1 2 7 1 1 2 8 1 1 1 2 0 1 1 3 0 1 1 4 0 1 1 5 0 1 1 6 0 1 1 7 0 1 1 2 1 1 1 3 1 1 1 4 1 1 1 5 1 1 1 6 1 1 1 7 1 1"
+
+local function buildPixelShovel(cx: number, cz: number, parent: Instance)
+	local model = Instance.new("Model")
+	model.Name = "OpShovel"
+	model.Parent = parent
+
+	-- Rebuild the baked reference voxels as SOLID matte cubes (the real shovel colours), placed flush
+	-- (slight overlap => no gaps). NO pedestal. Detailed pixels, reads as a real shovel.
+	local V = 0.35                                  -- build voxel size (=> ~12 studs tall)
+	local baseY = FLOOR_TOP + 4                     -- floats above the counter (no platform under it)
+	local wMid, dMid = (OP_SHOVEL_NW - 1) / 2, (OP_SHOVEL_NT - 1) / 2
+	local it = OP_SHOVEL_VOX:gmatch("%S+")
+	local topY = baseY
+	while true do
+		local hs = it()
+		if not hs then break end
+		local h = tonumber(hs) :: number
+		local w = tonumber(it()) :: number
+		local d = tonumber(it()) :: number
+		local c = tonumber(it()) :: number
+		local y = baseY + h * V
+		if y > topY then topY = y end
+		makePart({
+			Name = "Pixel",
+			Size = Vector3.new(V + 0.04, V + 0.04, V + 0.04), -- flush (overlap) => no gaps
+			Color = OP_SHOVEL_PALETTE[c] or OP_SHOVEL_PALETTE[1],
+			Material = Enum.Material.SmoothPlastic,            -- SOLID, not neon
+			NoStuds = true,
+			CanCollide = false,
+			CastShadow = false,
+			CFrame = CFrame.new(cx + (w - wMid) * V, y, cz + (d - dMid) * V),
+			Parent = model,
+		})
+	end
+
+	-- modest OP juice — kept light so the SOLID shovel still reads clearly (no hologram glow)
+	local fx = makePart({ Name = "Fx", Size = Vector3.new(1, 1, 1), Transparency = 1, NoStuds = true, CanCollide = false, CFrame = CFrame.new(cx, (baseY + topY) / 2, cz), Parent = model })
+	local s = Instance.new("Sparkles"); s.SparkleColor = Palette.Gold; s.Parent = fx
+	local light = Instance.new("PointLight"); light.Color = Color3.fromRGB(255, 238, 205); light.Brightness = 1.6; light.Range = 14; light.Shadows = false; light.Parent = fx
+
+	floatingLabel("🪓 OP SHOVEL", Vector3.new(cx, topY + 2.5, cz), parent, 240)
+end
+
+-- The OP shop back display: a pixel OP Incubator + OP Shovel side by side on a counter (no signage).
+local function buildOpShop(parent: Instance)
+	local cx, cz = PAV_CX + PAV_HALF_W / 2, PAV_CZ - PAV_HALF_L / 2 -- back-right quadrant (Q1) centre
+	makePart({ Name = "OpCounter", Size = Vector3.new(26, 2, 9), Color = WOOD_MED, CFrame = CFrame.new(cx, FLOOR_TOP + 1, cz), Parent = parent })
+	buildPixelIncubator(cx - 7, cz, parent)
+	buildPixelShovel(cx + 7, cz, parent)
 end
 
 ----------------------------------------------------------------- the open pavilion
@@ -653,7 +820,7 @@ local function buildPavilion(parent: Instance): Model
 
 	-- BACK features
 	buildDailyReward(pav)
-	buildRobuxShop(pav)
+	buildOpShop(pav)
 
 	-- enclose the whole shop in plank walls (centred double-door + an L-window wrapping each front corner),
 	-- then frame each corner window the SAME inside AND outside (both corners)

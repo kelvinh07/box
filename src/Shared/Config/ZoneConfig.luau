@@ -108,17 +108,57 @@ ZoneConfig.Zones = {
 	},
 
 	[8] = {
-		DisplayName = "Cosmic Void",
-		GroundColor = Color3.fromRGB(230, 110, 255),
+		DisplayName = "City",
+		GroundColor = Color3.fromRGB(255, 220, 90),
 		UnlockRebirths = 7,
-		Theme = "Cosmic",
+		-- CITY: an asphalt two-way road running toward the next zone, with thick-cardboard building
+		-- FACADES (bakery / deli / towers …) lining both border walls (BaseManager buildCityDecor).
+		Theme = "City",
 		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
 		CashScale = 60,
 		GemScale = 30,
 	},
+
+	-- Zones 9+ are UNTHEMED placeholders (plain dig fields framed by the stone-pile walls + cliffs).
+	-- Give one a Theme + a decorateLane branch to dress it up later. Odds are generated per zone.
+	[9] = {
+		DisplayName = "The Outskirts",
+		GroundColor = Color3.fromRGB(200, 200, 210),
+		UnlockRebirths = 8,
+		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
+		CashScale = 90,
+		GemScale = 45,
+	},
+
+	[10] = {
+		DisplayName = "Wastelands",
+		GroundColor = Color3.fromRGB(225, 180, 120),
+		UnlockRebirths = 9,
+		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
+		CashScale = 135,
+		GemScale = 68,
+	},
+
+	[11] = {
+		DisplayName = "The Rift",
+		GroundColor = Color3.fromRGB(150, 120, 255),
+		UnlockRebirths = 10,
+		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
+		CashScale = 200,
+		GemScale = 100,
+	},
+
+	[12] = {
+		DisplayName = "The Frontier",
+		GroundColor = Color3.fromRGB(120, 230, 200),
+		UnlockRebirths = 11,
+		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
+		CashScale = 300,
+		GemScale = 150,
+	},
 }
 
-ZoneConfig.MaxZone = 8
+ZoneConfig.MaxZone = 12
 
 -- CASH cost to BREAK the wall INTO each zone (zone progression is now decoupled from rebirth).
 -- Zone 1 is the starting zone (free). Cash RESETS on rebirth, so these are per-run costs; the
@@ -133,6 +173,10 @@ ZoneConfig.UnlockCash = {
 	[6] = 1400000,
 	[7] = 8800000,
 	[8] = 58000000,
+	[9] = 406000000,
+	[10] = 2842000000,
+	[11] = 19894000000,
+	[12] = 139258000000,
 }
 ZoneConfig.UnlockCashGrowth = 7
 
