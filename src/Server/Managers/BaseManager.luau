@@ -1351,7 +1351,7 @@ local function buildZoneArea(zone: number, pos: Vector3, farDir: Vector3, parent
 	local isForest = theme == "Forest"
 	-- grassy themes keep a green dig plate (mounds sit on grass). Cherry Blossom uses a solid PINK floor
 	-- (solidFloor below) with the petal carpet on top, so it is NOT grassy.
-	local isGrassy = isForest
+	local isGrassy = isForest or theme == "Park" -- Park is a grassy zone (grass floor + checker)
 	-- Themes with a SOLID-colour floor that FILLS the whole lane segment (no checker): Desert (sand)
 	-- and The Glaziers (ice). nil for grass/forest zones (which keep the small green checker frame).
 	local solidFloor: Color3? = nil
@@ -3615,6 +3615,220 @@ local function buildCityDecor(zone: number, centerZ: number)
 	end
 end
 
+------------------------------------------------------------- PARK (zone 9)
+local PARK_BRICK = Color3.fromRGB(184, 78, 54)   -- red paver brick
+local PARK_BRICK2 = Color3.fromRGB(202, 100, 72) -- lighter red paver (variation)
+local PATH_MORTAR = Color3.fromRGB(150, 150, 156) -- grey cement showing between the bricks
+local PATH_CURB = Color3.fromRGB(150, 58, 44)     -- darker red brick curb (the taller edge outline)
+local F_STONE = Color3.fromRGB(198, 200, 206) -- light fountain stone
+local F_STONE2 = Color3.fromRGB(150, 154, 162)
+local F_WATER = Color3.fromRGB(120, 205, 240)
+local F_COL = Color3.fromRGB(124, 76, 76) -- maroon column
+
+-- the central fountain. Prefers the IMPORTED model (ServerStorage.StuddedFountain) — clones it,
+-- anchors + grounds it at the zone centre; falls back to a procedural deep-pool studded fountain
+-- (used until StuddedFountain is exported into src/ServerStorage + mapped in default.project.json).
+local function buildParkFountain(fx: number, fz: number, surfaceY: number): number
+	local imported = game:GetService("ServerStorage"):FindFirstChild("StuddedFountain")
+	if imported and imported:IsA("Model") then
+		local m = imported:Clone()
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.Anchored = true
+			end
+		end
+		local cf, size = m:GetBoundingBox()
+		m:PivotTo(m:GetPivot() + Vector3.new(fx - cf.X, surfaceY - (cf.Y - size.Y / 2), fz - cf.Z))
+		m.Name = "ParkFountain"
+		m.Parent = laneFolder
+		return math.max(size.X, size.Z) / 2
+	end
+
+	-- PROCEDURAL FALLBACK
+	local model = Instance.new("Model")
+	model.Name = "ParkFountain"
+	model.Parent = laneFolder
+	local OUT, RIMH, wallT = 26, 8, 3 -- outer footprint / deep rim / wall thickness
+	local inner = OUT - wallT * 2
+	-- base slab + 4 rim walls (square ring)
+	makePart({ Name = "FountainBase", Size = Vector3.new(OUT + 2, 1, OUT + 2), Color = F_STONE2, CFrame = CFrame.new(fx, surfaceY + 0.5, fz), Parent = model })
+	local cy = surfaceY + 1 + RIMH / 2
+	makePart({ Name = "FountainRim", Size = Vector3.new(OUT, RIMH, wallT), Color = F_STONE, CFrame = CFrame.new(fx, cy, fz - (inner / 2 + wallT / 2)), Parent = model })
+	makePart({ Name = "FountainRim", Size = Vector3.new(OUT, RIMH, wallT), Color = F_STONE, CFrame = CFrame.new(fx, cy, fz + (inner / 2 + wallT / 2)), Parent = model })
+	makePart({ Name = "FountainRim", Size = Vector3.new(wallT, RIMH, inner), Color = F_STONE, CFrame = CFrame.new(fx - (inner / 2 + wallT / 2), cy, fz), Parent = model })
+	makePart({ Name = "FountainRim", Size = Vector3.new(wallT, RIMH, inner), Color = F_STONE, CFrame = CFrame.new(fx + (inner / 2 + wallT / 2), cy, fz), Parent = model })
+	-- basin floor (low) + a DEEP translucent water volume filling the basin
+	makePart({ Name = "FountainFloor", Size = Vector3.new(inner, 1, inner), Color = F_STONE2, CFrame = CFrame.new(fx, surfaceY + 1.5, fz), Parent = model })
+	makePart({ Name = "FountainWater", NoStuds = true, Material = Enum.Material.Glass, Transparency = 0.35,
+		Size = Vector3.new(inner - 0.5, RIMH - 1.5, inner - 0.5), Color = F_WATER, CanCollide = false,
+		CFrame = CFrame.new(fx, surfaceY + 2 + (RIMH - 1.5) / 2, fz), Parent = model })
+	-- central pedestal + tiered column with white caps
+	local pedH = RIMH + 1
+	makePart({ Name = "FountainPed", Size = Vector3.new(8, pedH, 8), Color = F_COL, CFrame = CFrame.new(fx, surfaceY + 1 + pedH / 2, fz), Parent = model })
+	local tierY = surfaceY + 1 + pedH
+	for _, t in ipairs({ { 6, 3 }, { 4, 3 }, { 2.5, 3 } }) do
+		local w, h = t[1], t[2]
+		makePart({ Name = "FountainTier", Size = Vector3.new(w, h, w), Color = F_COL, CFrame = CFrame.new(fx, tierY + h / 2, fz), Parent = model })
+		makePart({ Name = "FountainCap", Size = Vector3.new(w + 1, 0.8, w + 1), Color = Palette.Snow, CFrame = CFrame.new(fx, tierY + h + 0.4, fz), Parent = model })
+		tierY = tierY + h + 0.8
+	end
+	-- water-spray emitter factory
+	local function spray(part: BasePart, rate: number, speed: number)
+		local pe = Instance.new("ParticleEmitter")
+		pe.Color = ColorSequence.new(F_WATER)
+		pe.Lifetime = NumberRange.new(0.7, 1.2)
+		pe.Rate = rate
+		pe.Speed = NumberRange.new(speed, speed + 3)
+		pe.SpreadAngle = Vector2.new(12, 12)
+		pe.Acceleration = Vector3.new(0, -34, 0)
+		pe.Size = NumberSequence.new(0.85)
+		pe.LightEmission = 0.4
+		pe.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1) })
+		pe.EmissionDirection = Enum.NormalId.Top
+		pe.Parent = part
+	end
+	-- 4 cube spouts (tilted out+up) spraying into the pool, + a top spray
+	local spoutY = surfaceY + 1 + pedH + 1.5
+	for _, d in ipairs({ Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0), Vector3.new(0, 0, 1), Vector3.new(0, 0, -1) }) do
+		local sp = makePart({ Name = "FountainSpout", Size = Vector3.new(2, 2, 2), Color = Palette.Snow,
+			CFrame = CFrame.new(fx + d.X * 4.5, spoutY, fz + d.Z * 4.5) * CFrame.Angles(math.rad(d.Z * 34), 0, math.rad(-d.X * 34)),
+			Parent = model })
+		spray(sp, 16, 9)
+	end
+	local top = makePart({ Name = "FountainTop", Size = Vector3.new(1.6, 1.6, 1.6), Color = Palette.Snow, CFrame = CFrame.new(fx, tierY + 1, fz), Parent = model })
+	spray(top, 22, 12)
+	return OUT
+end
+
+-- a small wooden PARK BENCH centred at (bx,bz), seat facing yaw.
+local function buildParkBench(bx: number, bz: number, surfaceY: number, faceYaw: number)
+	local model = Instance.new("Model")
+	model.Name = "ParkBench"
+	model.Parent = laneFolder
+	local base = CFrame.new(bx, surfaceY, bz) * CFrame.Angles(0, faceYaw, 0)
+	makePart({ Name = "BenchSeat", Size = Vector3.new(8, 0.5, 2.6), Color = Palette.Fence, CFrame = base * CFrame.new(0, 2.2, 0), Parent = model })
+	makePart({ Name = "BenchBack", Size = Vector3.new(8, 2.4, 0.5), Color = Palette.Fence, CFrame = base * CFrame.new(0, 3.4, -1.05), Parent = model })
+	for _, sx in ipairs({ -1, 1 }) do
+		makePart({ Name = "BenchLeg", Size = Vector3.new(0.6, 2.2, 2.4), Color = Palette.BaseTrim, CFrame = base * CFrame.new(sx * 3.4, 1.1, 0), Parent = model })
+	end
+end
+
+-- a REFINED brick path: small red brick pavers on a grey-cement (mortar) base, outlined on the inner
+-- AND outer edges by a slightly TALLER red-brick curb. Built from many SMALL pieces so the ring around
+-- the fountain reads smooth + circular. Runs down the lane and splits into a ring around the fountain.
+local function buildParkPath(fx: number, centerZ: number, halfZ: number, ringR: number, surfaceY: number)
+	local PW = 10                  -- path width
+	local baseTop = surfaceY + 0.4 -- pavers sit on top of the mortar base
+	-- one brick (red paver by default, or a custom colour for curbs); h taller => raised curb
+	local function brick(x: number, z: number, yaw: number, sizeX: number, sizeZ: number, h: number, color: Color3?)
+		makePart({ Name = "PathBrick", Size = Vector3.new(sizeX, h, sizeZ),
+			Color = color or ((decorRng:NextNumber() < 0.5) and PARK_BRICK or PARK_BRICK2),
+			CFrame = CFrame.new(x, baseTop + h / 2, z) * CFrame.Angles(0, yaw, 0), Parent = laneFolder })
+	end
+	-- grey mortar base slab (the cement the bricks sit in; shows through the gaps)
+	local function mortar(x: number, z: number, sx: number, sz: number, yaw: number?)
+		local cf = CFrame.new(x, surfaceY + 0.2, z)
+		if yaw then cf = cf * CFrame.Angles(0, yaw, 0) end
+		makePart({ Name = "PathMortar", Size = Vector3.new(sx, 0.45, sz), Color = PATH_MORTAR, CFrame = cf, Parent = laneFolder })
+	end
+
+	-- STRAIGHT section (along Z at x=fx) between z0..z1: mortar + running-bond pavers + 2 curb rails
+	local function straight(z0: number, z1: number)
+		if z1 - z0 < 1 then return end
+		mortar(fx, (z0 + z1) / 2, PW, z1 - z0)
+		local cellX, cellZ = 3.2, 2.0
+		local iz, z = 0, z0 + cellZ / 2
+		while z < z1 - 0.3 do
+			local off = (iz % 2 == 0) and 0 or cellX / 2 -- running bond: stagger alternate rows
+			local x = fx - PW / 2 + cellX / 2 - off
+			while x < fx + PW / 2 - 0.3 do
+				if x > fx - PW / 2 + 0.3 then
+					brick(x, z, 0, cellX * 0.84, cellZ * 0.78, 0.5)
+				end
+				x = x + cellX
+			end
+			z = z + cellZ
+			iz = iz + 1
+		end
+		for _, sx in ipairs({ -1, 1 }) do -- taller curb rails outlining both edges
+			brick(fx + sx * (PW / 2 - 0.2), (z0 + z1) / 2, 0, 1.3, z1 - z0, 1.1, PATH_CURB)
+		end
+	end
+	straight(centerZ - halfZ, centerZ - ringR)
+	straight(centerZ + ringR, centerZ + halfZ)
+
+	-- RING around the fountain (the path splits to go around it)
+	do -- smooth grey mortar base ring
+		local n = 52
+		for i = 0, n - 1 do
+			local a = (i / n) * math.pi * 2
+			mortar(fx + math.cos(a) * ringR, centerZ + math.sin(a) * ringR, PW + 0.6, (2 * math.pi * ringR / n) + 1.2, a + math.pi / 2)
+		end
+	end
+	-- 3 concentric paver bands of small tangential bricks (staggered) => smooth circular paving
+	for bi, r in ipairs({ ringR - PW * 0.3, ringR, ringR + PW * 0.3 }) do
+		local n = math.max(20, math.floor(2 * math.pi * r / 3.2))
+		local seg = (2 * math.pi * r) / n
+		local stagger = (bi % 2 == 0) and (math.pi / n) or 0
+		for i = 0, n - 1 do
+			local a = (i / n) * math.pi * 2 + stagger
+			brick(fx + math.cos(a) * r, centerZ + math.sin(a) * r, a + math.pi / 2, PW * 0.27, seg * 0.82, 0.5)
+		end
+	end
+	-- inner + outer taller curb rings (the elegant outline)
+	for _, cr in ipairs({ ringR - PW / 2 + 0.2, ringR + PW / 2 - 0.2 }) do
+		local n = math.max(40, math.floor(2 * math.pi * cr / 2.6))
+		local seg = (2 * math.pi * cr) / n
+		for i = 0, n - 1 do
+			local a = (i / n) * math.pi * 2
+			brick(fx + math.cos(a) * cr, centerZ + math.sin(a) * cr, a + math.pi / 2, 1.3, seg + 0.5, 1.1, PATH_CURB)
+		end
+	end
+end
+
+-- PARK decor: central fountain + brick path + scattered forest flowers/grass + 2 benches + 3 trees.
+local function buildParkDecor(zone: number, centerZ: number)
+	local cx = MapBuilder.DigCenter.X
+	local surfaceY = LANE_SEG_Y + SEG_SIZE.Y / 2
+	local halfX = LANE_SIDE_INNER_X - 8
+	local halfZ = LANE_STEP / 2 - 8
+
+	local fOut = buildParkFountain(cx, centerZ, surfaceY)
+	addDigExclusion(cx, centerZ, fOut / 2 + 6, zone)
+	local ringR = fOut / 2 + 7
+	buildParkPath(cx, centerZ, halfZ, ringR, surfaceY)
+
+	-- forest flowers + grass tufts across the grass (off the fountain ring + the central path)
+	local function freeSpot(x: number, z: number): boolean
+		local dx, dz = x - cx, z - centerZ
+		return (dx * dx + dz * dz) > (ringR + 4) ^ 2 and math.abs(dx) > 6
+	end
+	for _ = 1, 80 do
+		local x = cx + (decorRng:NextNumber() - 0.5) * 2 * halfX
+		local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * halfZ
+		if freeSpot(x, z) then buildGrassTuft(x, z, surfaceY) end
+	end
+	for _ = 1, 28 do
+		local x = cx + (decorRng:NextNumber() - 0.5) * 2 * halfX
+		local z = centerZ + (decorRng:NextNumber() - 0.5) * 2 * halfZ
+		if freeSpot(x, z) then buildFlower(x, z, surfaceY) end
+	end
+
+	-- 2 benches: bottom-left + top-right quadrant, each facing the fountain
+	local function bench(bx: number, bz: number)
+		buildParkBench(bx, bz, surfaceY, math.atan2(cx - bx, centerZ - bz))
+		addDigExclusion(bx, bz, 6, zone)
+	end
+	bench(cx - halfX * 0.55, centerZ - halfZ * 0.5)
+	bench(cx + halfX * 0.55, centerZ + halfZ * 0.5)
+
+	-- 3 trees of different heights around the zone
+	for _, t in ipairs({ { cx - halfX * 0.62, centerZ + halfZ * 0.55, 30 }, { cx + halfX * 0.6, centerZ - halfZ * 0.58, 22 }, { cx - halfX * 0.18, centerZ + halfZ * 0.8, 17 } }) do
+		placeTree(t[1], t[2], t[3], laneFolder)
+		addDigExclusion(t[1], t[2], 10, zone)
+	end
+end
+
 	for k = 1, ZoneConfig.MaxZone - 1 do
 		local wz = LANE_START + (k - 1) * LANE_STEP + LANE_STEP / 2
 		if k == 1 then
@@ -3664,6 +3878,10 @@ end
 			-- CITY: a two-way asphalt road toward the next zone + thick-cardboard building facades
 			-- (bakery / deli / towers …) lining both border walls, taller than the walls.
 			buildCityDecor(z, LANE_START + (z - 1) * LANE_STEP)
+		elseif data and data.Theme == "Park" then
+			-- PARK: central deep-pool fountain + a brick path splitting around it + forest
+			-- flowers/grass + 2 benches + 3 varied-height trees.
+			buildParkDecor(z, LANE_START + (z - 1) * LANE_STEP)
 		end
 	end
 end

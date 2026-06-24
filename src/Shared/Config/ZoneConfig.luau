@@ -122,9 +122,12 @@ ZoneConfig.Zones = {
 	-- Zones 9+ are UNTHEMED placeholders (plain dig fields framed by the stone-pile walls + cliffs).
 	-- Give one a Theme + a decorateLane branch to dress it up later. Odds are generated per zone.
 	[9] = {
-		DisplayName = "The Outskirts",
-		GroundColor = Color3.fromRGB(200, 200, 210),
+		DisplayName = "Park",
+		GroundColor = Color3.fromRGB(95, 215, 70),
 		UnlockRebirths = 8,
+		-- PARK: grass floor + a central fountain, a brick path splitting around it, scattered forest
+		-- flowers/grass, park benches and varied trees (BaseManager buildParkDecor).
+		Theme = "Park",
 		BrainrotTiers = { "Common", "Uncommon", "Rare", "Legendary", "Mythic" },
 		CashScale = 90,
 		GemScale = 45,
